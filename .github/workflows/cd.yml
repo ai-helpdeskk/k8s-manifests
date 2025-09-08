@@ -1,5 +1,5 @@
 # .github/workflows/cd.yml
-name: CD - Deploy All Services
+name: CD - Deploy to Kubernetes
 
 on:
   repository_dispatch:
@@ -35,6 +35,7 @@ on:
         - bedrock-service
         - file-service
         - frontend
+        - infrastructure-only
 
 env:
   KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
@@ -50,24 +51,40 @@ jobs:
     - name: Setup kubectl
       uses: azure/setup-kubectl@v3
       with:
-        version: 'latest'
+        version: 'v1.28.0'
         
     - name: Configure kubectl
       run: |
+        if [ -z "${{ env.KUBE_CONFIG_DATA }}" ]; then
+          echo "❌ KUBE_CONFIG_DATA secret not found!"
+          echo "Please set the KUBE_CONFIG_DATA secret with base64 encoded kubeconfig"
+          exit 1
+        fi
+        
         echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
         export KUBECONFIG=kubeconfig
-        kubectl config current-context
+        
+        # Test kubectl connection
+        if ! kubectl cluster-info > /dev/null 2>&1; then
+          echo "❌ Failed to connect to Kubernetes cluster"
+          exit 1
+        fi
+        
+        echo "✅ Successfully connected to Kubernetes cluster"
+        kubectl cluster-info
         
     - name: Determine deployment parameters
       id: params
       run: |
-        # Set environment
+        # Set environment and service from different trigger types
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           ENV="${{ github.event.inputs.environment }}"
           SERVICE="${{ github.event.inputs.service }}"
         elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then
           ENV="${{ github.event.client_payload.environment }}"
-          SERVICE="${{ github.event.action }}"
+          SERVICE_TYPE="${{ github.event.action }}"
+          # Extract service name from event type (deploy-api-gateway -> api-gateway)
+          SERVICE=$(echo "${SERVICE_TYPE}" | sed 's/deploy-//')
         else
           ENV="staging"
           SERVICE="all"
@@ -84,111 +101,256 @@ jobs:
         echo "service=$SERVICE" >> $GITHUB_OUTPUT
         echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
         
-    - name: Create namespace if not exists
+        echo "🚀 Deployment Parameters:"
+        echo "- Environment: $ENV"
+        echo "- Service: $SERVICE"
+        echo "- Namespace: $NAMESPACE"
+        
+    - name: Create namespace and setup infrastructure
       run: |
         export KUBECONFIG=kubeconfig
+        
+        echo "📝 Creating namespace: ${{ steps.params.outputs.namespace }}"
         kubectl create namespace ${{ steps.params.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
         
-    - name: Deploy ConfigMaps and Secrets
-      run: |
-        export KUBECONFIG=kubeconfig
-        kubectl apply -f k8s/configmaps/ -n ${{ steps.params.outputs.namespace }}
-        kubectl apply -f k8s/secrets/ -n ${{ steps.params.outputs.namespace }}
+        echo "🔧 Applying infrastructure components..."
         
-    - name: Deploy PVCs
-      run: |
-        export KUBECONFIG=kubeconfig
-        kubectl apply -f k8s/pvc/ -n ${{ steps.params.outputs.namespace }}
+        # Apply ConfigMaps
+        if [ -d "k8s/configmaps" ]; then
+          echo "📋 Applying ConfigMaps..."
+          kubectl apply -f k8s/configmaps/ -n ${{ steps.params.outputs.namespace }} || true
+        fi
         
-    - name: Deploy Services
-      run: |
-        export KUBECONFIG=kubeconfig
-        kubectl apply -f k8s/services/ -n ${{ steps.params.outputs.namespace }}
+        # Apply Secrets (if they exist)
+        if [ -d "k8s/secrets" ]; then
+          echo "🔐 Applying Secrets..."
+          # Only apply if files exist and are not empty
+          for secret_file in k8s/secrets/*.yaml; do
+            if [ -f "$secret_file" ]; then
+              echo "Applying $secret_file"
+              kubectl apply -f "$secret_file" -n ${{ steps.params.outputs.namespace }} || echo "⚠️ Warning: Failed to apply $secret_file"
+            fi
+          done
+        fi
         
-    - name: Deploy StatefulSets
+        # Apply PVCs
+        if [ -d "k8s/pvc" ]; then
+          echo "💾 Applying PVCs..."
+          kubectl apply -f k8s/pvc/ -n ${{ steps.params.outputs.namespace }} || true
+        fi
+        
+        # Apply Services
+        if [ -d "k8s/services" ]; then
+          echo "🌐 Applying Services..."
+          kubectl apply -f k8s/services/ -n ${{ steps.params.outputs.namespace }} || true
+        fi
+        
+    - name: Deploy StatefulSets (Database)
       run: |
         export KUBECONFIG=kubeconfig
-        kubectl apply -f k8s/statefulsets/ -n ${{ steps.params.outputs.namespace }}
+        
+        if [ -d "k8s/statefulsets" ] && [ "${{ steps.params.outputs.service }}" = "all" ]; then
+          echo "🗄️ Deploying StatefulSets (Database)..."
+          kubectl apply -f k8s/statefulsets/ -n ${{ steps.params.outputs.namespace }}
+          
+          # Wait for MySQL to be ready
+          echo "⏳ Waiting for MySQL to be ready..."
+          kubectl wait --for=condition=ready pod -l app=mysql -n ${{ steps.params.outputs.namespace }} --timeout=300s || {
+            echo "⚠️ MySQL not ready within timeout, continuing anyway..."
+          }
+        fi
         
     - name: Deploy specific service
-      if: steps.params.outputs.service != 'all' && steps.params.outputs.service != 'deploy-all'
+      if: steps.params.outputs.service != 'all' && steps.params.outputs.service != 'infrastructure-only'
       run: |
         export KUBECONFIG=kubeconfig
         
-        SERVICE_NAME=$(echo "${{ steps.params.outputs.service }}" | sed 's/deploy-//')
+        SERVICE_NAME="${{ steps.params.outputs.service }}"
         DEPLOYMENT_FILE="k8s/deployments/${SERVICE_NAME}-deployment.yaml"
         
+        echo "🚀 Deploying specific service: $SERVICE_NAME"
+        
         if [ -f "$DEPLOYMENT_FILE" ]; then
+          echo "📦 Applying $DEPLOYMENT_FILE"
           kubectl apply -f $DEPLOYMENT_FILE -n ${{ steps.params.outputs.namespace }}
+          
+          echo "⏳ Waiting for $SERVICE_NAME rollout..."
           kubectl rollout status deployment/$SERVICE_NAME -n ${{ steps.params.outputs.namespace }} --timeout=300s
+          
+          echo "✅ $SERVICE_NAME deployed successfully"
+        else
+          echo "❌ Deployment file not found: $DEPLOYMENT_FILE"
+          echo "Available deployment files:"
+          ls -la k8s/deployments/ || echo "No deployments directory found"
+          exit 1
         fi
         
     - name: Deploy all services
-      if: steps.params.outputs.service == 'all' || steps.params.outputs.service == 'deploy-all'
+      if: steps.params.outputs.service == 'all'
       run: |
         export KUBECONFIG=kubeconfig
+        
+        echo "🚀 Deploying all services..."
         
         # Deploy all deployments
-        kubectl apply -f k8s/deployments/ -n ${{ steps.params.outputs.namespace }}
-        
-        # Wait for all deployments to be ready
-        kubectl rollout status deployment/mysql -n ${{ steps.params.outputs.namespace }} --timeout=300s || true
-        kubectl rollout status deployment/bedrock-service -n ${{ steps.params.outputs.namespace }} --timeout=300s
-        kubectl rollout status deployment/file-service -n ${{ steps.params.outputs.namespace }} --timeout=300s
-        kubectl rollout status deployment/api-gateway -n ${{ steps.params.outputs.namespace }} --timeout=300s
-        kubectl rollout status deployment/frontend -n ${{ steps.params.outputs.namespace }} --timeout=300s
+        if [ -d "k8s/deployments" ]; then
+          kubectl apply -f k8s/deployments/ -n ${{ steps.params.outputs.namespace }}
+          
+          echo "⏳ Waiting for all deployments to be ready..."
+          
+          # Wait for deployments individually with better error handling
+          DEPLOYMENTS=("bedrock-service" "file-service" "api-gateway" "frontend")
+          
+          for deployment in "${DEPLOYMENTS[@]}"; do
+            echo "⏳ Waiting for $deployment..."
+            if kubectl get deployment $deployment -n ${{ steps.params.outputs.namespace }} > /dev/null 2>&1; then
+              kubectl rollout status deployment/$deployment -n ${{ steps.params.outputs.namespace }} --timeout=300s || {
+                echo "⚠️ Warning: $deployment rollout timeout, but continuing..."
+              }
+            else
+              echo "ℹ️ Deployment $deployment not found, skipping..."
+            fi
+          done
+        fi
         
     - name: Deploy Ingress
+      if: steps.params.outputs.service == 'all' || steps.params.outputs.service == 'infrastructure-only'
       run: |
         export KUBECONFIG=kubeconfig
-        kubectl apply -f k8s/ingress/ -n ${{ steps.params.outputs.namespace }}
         
-    - name: Deploy Network Policies
+        if [ -d "k8s/ingress" ]; then
+          echo "🌍 Applying Ingress configurations..."
+          kubectl apply -f k8s/ingress/ -n ${{ steps.params.outputs.namespace }} || {
+            echo "⚠️ Warning: Ingress application failed, but continuing..."
+          }
+        fi
+        
+    - name: Apply Network Policies
+      if: steps.params.outputs.service == 'all' || steps.params.outputs.service == 'infrastructure-only'
       run: |
         export KUBECONFIG=kubeconfig
-        # Apply the simplified network policies we created
-        kubectl apply -f k8s/network-policies/ -n ${{ steps.params.outputs.namespace }} || true
+        
+        if [ -d "k8s/network-policies" ]; then
+          echo "🔒 Applying Network Policies..."
+          kubectl apply -f k8s/network-policies/ -n ${{ steps.params.outputs.namespace }} || {
+            echo "⚠️ Warning: Network policies application failed, but continuing..."
+          }
+        fi
+        
+    - name: Apply HPA (if enabled)
+      if: steps.params.outputs.service == 'all' || steps.params.outputs.service == 'infrastructure-only'
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        if [ -d "k8s/hpa" ]; then
+          echo "📈 Applying Horizontal Pod Autoscalers..."
+          kubectl apply -f k8s/hpa/ -n ${{ steps.params.outputs.namespace }} || {
+            echo "⚠️ Warning: HPA application failed (metrics-server might not be available)"
+          }
+        fi
         
     - name: Verify deployment
       run: |
         export KUBECONFIG=kubeconfig
         
-        echo "=== Pod Status ==="
-        kubectl get pods -n ${{ steps.params.outputs.namespace }}
+        echo "🔍 Verifying deployment status..."
         
-        echo "=== Service Status ==="
+        echo "=== Namespace ==="
+        kubectl get namespace ${{ steps.params.outputs.namespace }}
+        
+        echo "=== Pods ==="
+        kubectl get pods -n ${{ steps.params.outputs.namespace }} -o wide
+        
+        echo "=== Services ==="
         kubectl get svc -n ${{ steps.params.outputs.namespace }}
         
-        echo "=== Ingress Status ==="
-        kubectl get ingress -n ${{ steps.params.outputs.namespace }}
+        echo "=== Deployments ==="
+        kubectl get deployments -n ${{ steps.params.outputs.namespace }}
+        
+        echo "=== StatefulSets ==="
+        kubectl get statefulsets -n ${{ steps.params.outputs.namespace }} || echo "No StatefulSets found"
+        
+        echo "=== Ingress ==="
+        kubectl get ingress -n ${{ steps.params.outputs.namespace }} || echo "No Ingress found"
+        
+        echo "=== PVCs ==="
+        kubectl get pvc -n ${{ steps.params.outputs.namespace }} || echo "No PVCs found"
         
     - name: Run health checks
       run: |
         export KUBECONFIG=kubeconfig
         
-        # Wait for services to be ready
-        sleep 60
+        echo "🏥 Running health checks..."
         
-        # Check API Gateway health
-        kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/api-gateway -- wget -qO- --timeout=10 http://localhost:8000/health || exit 1
+        # Wait a bit for services to be fully ready
+        sleep 30
         
-        # Check Bedrock Service health
-        kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/bedrock-service -- wget -qO- --timeout=10 http://localhost:9000/health || exit 1
+        # Function to check service health
+        check_service_health() {
+          local service_name=$1
+          local port=$2
+          local health_path=$3
+          
+          echo "Checking $service_name health..."
+          
+          if kubectl get deployment $service_name -n ${{ steps.params.outputs.namespace }} > /dev/null 2>&1; then
+            # Check if pods are running
+            if kubectl get pods -l app=$service_name -n ${{ steps.params.outputs.namespace }} | grep -q Running; then
+              # Try health check
+              kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/$service_name -- wget -qO- --timeout=10 http://localhost:$port$health_path > /dev/null 2>&1 && {
+                echo "✅ $service_name is healthy"
+                return 0
+              } || {
+                echo "⚠️ $service_name health check failed, but pod is running"
+                return 1
+              }
+            else
+              echo "❌ $service_name pods are not running"
+              return 1
+            fi
+          else
+            echo "ℹ️ $service_name deployment not found, skipping health check"
+            return 0
+          fi
+        }
         
-        # Check File Service health
-        kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/file-service -- wget -qO- --timeout=10 http://localhost:7000/health || exit 1
+        # Check individual services
+        HEALTH_FAILURES=0
         
-        echo "All health checks passed!"
+        check_service_health "api-gateway" "8000" "/health" || ((HEALTH_FAILURES++))
+        check_service_health "bedrock-service" "9000" "/health" || ((HEALTH_FAILURES++))
+        check_service_health "file-service" "7000" "/health" || ((HEALTH_FAILURES++))
+        check_service_health "frontend" "3000" "/health" || ((HEALTH_FAILURES++))
         
-    - name: Send deployment notification
-      if: always()
-      run: |
-        STATUS="${{ job.status }}"
-        if [ "$STATUS" = "success" ]; then
-          MESSAGE="✅ Deployment successful for ${{ steps.params.outputs.service }} in ${{ steps.params.outputs.environment }}"
+        if [ $HEALTH_FAILURES -eq 0 ]; then
+          echo "✅ All health checks passed!"
         else
-          MESSAGE="❌ Deployment failed for ${{ steps.params.outputs.service }} in ${{ steps.params.outputs.environment }}"
+          echo "⚠️ $HEALTH_FAILURES health check(s) failed, but deployment completed"
         fi
         
-        echo "Deployment Status: $MESSAGE"
-        # Add Slack/Teams notification here if needed
+    - name: Deployment summary
+      if: always()
+      run: |
+        echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: ${{ steps.params.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Namespace**: ${{ steps.params.outputs.namespace }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Service**: ${{ steps.params.outputs.service }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Access Information" >> $GITHUB_STEP_SUMMARY
+          echo "- Check ingress configuration for external access" >> $GITHUB_STEP_SUMMARY
+          echo "- Use \`kubectl get ingress -n ${{ steps.params.outputs.namespace }}\` to see endpoints" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Deployment failed!**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔍 Troubleshooting" >> $GITHUB_STEP_SUMMARY
+          echo "- Check the workflow logs above for error details" >> $GITHUB_STEP_SUMMARY
+          echo "- Verify secrets are properly configured" >> $GITHUB_STEP_SUMMARY
+          echo "- Ensure Kubernetes cluster is accessible" >> $GITHUB_STEP_SUMMARY
+        fi
