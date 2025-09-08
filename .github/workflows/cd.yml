@@ -1,0 +1,194 @@
+# .github/workflows/cd.yml
+name: CD - Deploy All Services
+
+on:
+  repository_dispatch:
+    types: 
+      - deploy-api-gateway
+      - deploy-bedrock-service
+      - deploy-file-service
+      - deploy-frontend
+      - deploy-all
+  push:
+    branches: [ main ]
+    paths:
+      - 'k8s/**'
+      - '!README.md'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      service:
+        description: 'Service to deploy'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - api-gateway
+        - bedrock-service
+        - file-service
+        - frontend
+
+env:
+  KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+        
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'latest'
+        
+    - name: Configure kubectl
+      run: |
+        echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+        kubectl config current-context
+        
+    - name: Determine deployment parameters
+      id: params
+      run: |
+        # Set environment
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          ENV="${{ github.event.inputs.environment }}"
+          SERVICE="${{ github.event.inputs.service }}"
+        elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          ENV="${{ github.event.client_payload.environment }}"
+          SERVICE="${{ github.event.action }}"
+        else
+          ENV="staging"
+          SERVICE="all"
+        fi
+        
+        # Set namespace based on environment
+        if [ "$ENV" = "production" ]; then
+          NAMESPACE="bedrock-chat-v2"
+        else
+          NAMESPACE="bedrock-chat-staging"
+        fi
+        
+        echo "environment=$ENV" >> $GITHUB_OUTPUT
+        echo "service=$SERVICE" >> $GITHUB_OUTPUT
+        echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
+        
+    - name: Create namespace if not exists
+      run: |
+        export KUBECONFIG=kubeconfig
+        kubectl create namespace ${{ steps.params.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+        
+    - name: Deploy ConfigMaps and Secrets
+      run: |
+        export KUBECONFIG=kubeconfig
+        kubectl apply -f k8s/configmaps/ -n ${{ steps.params.outputs.namespace }}
+        kubectl apply -f k8s/secrets/ -n ${{ steps.params.outputs.namespace }}
+        
+    - name: Deploy PVCs
+      run: |
+        export KUBECONFIG=kubeconfig
+        kubectl apply -f k8s/pvc/ -n ${{ steps.params.outputs.namespace }}
+        
+    - name: Deploy Services
+      run: |
+        export KUBECONFIG=kubeconfig
+        kubectl apply -f k8s/services/ -n ${{ steps.params.outputs.namespace }}
+        
+    - name: Deploy StatefulSets
+      run: |
+        export KUBECONFIG=kubeconfig
+        kubectl apply -f k8s/statefulsets/ -n ${{ steps.params.outputs.namespace }}
+        
+    - name: Deploy specific service
+      if: steps.params.outputs.service != 'all' && steps.params.outputs.service != 'deploy-all'
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        SERVICE_NAME=$(echo "${{ steps.params.outputs.service }}" | sed 's/deploy-//')
+        DEPLOYMENT_FILE="k8s/deployments/${SERVICE_NAME}-deployment.yaml"
+        
+        if [ -f "$DEPLOYMENT_FILE" ]; then
+          kubectl apply -f $DEPLOYMENT_FILE -n ${{ steps.params.outputs.namespace }}
+          kubectl rollout status deployment/$SERVICE_NAME -n ${{ steps.params.outputs.namespace }} --timeout=300s
+        fi
+        
+    - name: Deploy all services
+      if: steps.params.outputs.service == 'all' || steps.params.outputs.service == 'deploy-all'
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        # Deploy all deployments
+        kubectl apply -f k8s/deployments/ -n ${{ steps.params.outputs.namespace }}
+        
+        # Wait for all deployments to be ready
+        kubectl rollout status deployment/mysql -n ${{ steps.params.outputs.namespace }} --timeout=300s || true
+        kubectl rollout status deployment/bedrock-service -n ${{ steps.params.outputs.namespace }} --timeout=300s
+        kubectl rollout status deployment/file-service -n ${{ steps.params.outputs.namespace }} --timeout=300s
+        kubectl rollout status deployment/api-gateway -n ${{ steps.params.outputs.namespace }} --timeout=300s
+        kubectl rollout status deployment/frontend -n ${{ steps.params.outputs.namespace }} --timeout=300s
+        
+    - name: Deploy Ingress
+      run: |
+        export KUBECONFIG=kubeconfig
+        kubectl apply -f k8s/ingress/ -n ${{ steps.params.outputs.namespace }}
+        
+    - name: Deploy Network Policies
+      run: |
+        export KUBECONFIG=kubeconfig
+        # Apply the simplified network policies we created
+        kubectl apply -f k8s/network-policies/ -n ${{ steps.params.outputs.namespace }} || true
+        
+    - name: Verify deployment
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        echo "=== Pod Status ==="
+        kubectl get pods -n ${{ steps.params.outputs.namespace }}
+        
+        echo "=== Service Status ==="
+        kubectl get svc -n ${{ steps.params.outputs.namespace }}
+        
+        echo "=== Ingress Status ==="
+        kubectl get ingress -n ${{ steps.params.outputs.namespace }}
+        
+    - name: Run health checks
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        # Wait for services to be ready
+        sleep 60
+        
+        # Check API Gateway health
+        kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/api-gateway -- wget -qO- --timeout=10 http://localhost:8000/health || exit 1
+        
+        # Check Bedrock Service health
+        kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/bedrock-service -- wget -qO- --timeout=10 http://localhost:9000/health || exit 1
+        
+        # Check File Service health
+        kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/file-service -- wget -qO- --timeout=10 http://localhost:7000/health || exit 1
+        
+        echo "All health checks passed!"
+        
+    - name: Send deployment notification
+      if: always()
+      run: |
+        STATUS="${{ job.status }}"
+        if [ "$STATUS" = "success" ]; then
+          MESSAGE="✅ Deployment successful for ${{ steps.params.outputs.service }} in ${{ steps.params.outputs.environment }}"
+        else
+          MESSAGE="❌ Deployment failed for ${{ steps.params.outputs.service }} in ${{ steps.params.outputs.environment }}"
+        fi
+        
+        echo "Deployment Status: $MESSAGE"
+        # Add Slack/Teams notification here if needed
