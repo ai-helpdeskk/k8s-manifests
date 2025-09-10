@@ -1,4 +1,4 @@
-# k8s/statefulsets/mysql-statefulset.yaml
+# k8s/statefulsets/mysql-statefulset-fixed.yaml
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -43,8 +43,9 @@ spec:
               key: MYSQL_PASSWORD
         args:
         - --default-authentication-plugin=mysql_native_password
-        - --innodb-buffer-pool-size=64M
-        - --max-connections=50
+        - --innodb-buffer-pool-size=128M
+        - --max-connections=100
+        - --skip-name-resolve
         ports:
         - containerPort: 3306
           name: mysql
@@ -59,20 +60,20 @@ spec:
             - sh
             - -c
             - 'mysqladmin ping -h localhost -u root -p"$MYSQL_ROOT_PASSWORD"'
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
+          initialDelaySeconds: 60  # Increased from 30
+          periodSeconds: 15        # Increased from 10
+          timeoutSeconds: 10       # Increased from 5
           successThreshold: 1
-          failureThreshold: 15
+          failureThreshold: 20     # Increased from 15
         livenessProbe:
           exec:
             command:
             - sh
             - -c
             - 'mysqladmin ping -h localhost -u root -p"$MYSQL_ROOT_PASSWORD"'
-          initialDelaySeconds: 60
-          periodSeconds: 20
-          timeoutSeconds: 5
+          initialDelaySeconds: 120  # Increased from 60
+          periodSeconds: 30         # Increased from 20
+          timeoutSeconds: 10        # Increased from 5
           successThreshold: 1
           failureThreshold: 3
         readinessProbe:
@@ -81,18 +82,18 @@ spec:
             - sh
             - -c
             - 'mysql -h localhost -u root -p"$MYSQL_ROOT_PASSWORD" -e "SELECT 1"'
-          initialDelaySeconds: 45
-          periodSeconds: 10
-          timeoutSeconds: 5
+          initialDelaySeconds: 90   # Increased from 45
+          periodSeconds: 15         # Increased from 10
+          timeoutSeconds: 10        # Increased from 5
           successThreshold: 1
-          failureThreshold: 3
+          failureThreshold: 5       # Increased from 3
         resources:
           requests:
-            memory: "256Mi"
-            cpu: "100m"
+            memory: "512Mi"   # Increased from 256Mi
+            cpu: "200m"       # Increased from 100m
           limits:
-            memory: "1Gi"
-            cpu: "500m"
+            memory: "2Gi"     # Increased from 1Gi
+            cpu: "1000m"      # Increased from 500m
       volumes:
       - name: init-script
         configMap:
@@ -102,7 +103,7 @@ spec:
       name: mysql-data
     spec:
       accessModes: ["ReadWriteOnce"]
-      storageClassName: local-storage  # Add this line
+      storageClassName: local-storage
       resources:
         requests:
           storage: 10Gi
