@@ -1,4 +1,3 @@
-# k8s/pvc/file-uploads-pvc.yaml
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -7,7 +6,8 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: local-storage  # Add this line
   resources:
     requests:
-      storage: 20Gi
+      storage: 5Gi
+  storageClassName: local-path
+  volumeMode: Filesystem
