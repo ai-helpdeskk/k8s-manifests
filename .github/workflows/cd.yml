@@ -14,7 +14,7 @@ on:
       - 'k8s/network-policies/**'
       - 'k8s/hpa/**'
       - 'k8s/statefulsets/**'
-      # Exclude deployment files - handled by service CDs
+      # Exclude deployments files - handled by service CDs
       - '!k8s/deployments/**'
   workflow_dispatch:
     inputs:
