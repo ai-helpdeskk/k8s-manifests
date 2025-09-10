@@ -1,80 +1,20 @@
-namname: CD - Bedrock Chat OneClick
+name: CD - Test Without MySQL
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
-  BEDROCK-CHAT-ONECLICK-DEPLOY:
+  TEST-DEPLOY:
     runs-on: self-hosted
     steps:
-      # ======================
-      # Checkout current repo
-      # ======================
       - name: Checkout current repo
         uses: actions/checkout@v4
       
-      # ======================
-      # Setup cluster context
-      # ======================
-      - name: Apply Namespace & Infrastructure
+      - name: Apply Namespace
         run: |
           kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/storage/
-          kubectl apply -f k8s/pvc/
-          
-          # Create storage directories
-          sudo mkdir -p /opt/mysql-data /opt/file-uploads
-          sudo chmod 777 /opt/mysql-data /opt/file-uploads
-      
-      # ======================
-      # MYSQL DATABASE
-      # ======================
-      - name: Deploy MySQL Database
-        run: |
           kubectl apply -f k8s/configmaps/ --recursive -n bedrock-chat-v2
-          kubectl apply -f k8s/secrets/ --recursive -n bedrock-chat-v2
           kubectl apply -f k8s/dockerhub-secrets.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/services/mysql-service.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/services/mysql-headless-service.yaml -n bedrock-chat-v2
-          
-          # Delete and recreate StatefulSet if it exists
-          kubectl delete statefulset mysql -n bedrock-chat-v2 --ignore-not-found=true
-          sleep 10
-          kubectl apply -f k8s/statefulsets/mysql-statefulset.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=mysql -n bedrock-chat-v2 --timeout=300s
       
-      # ======================
-      # FILE SERVICE
-      # ======================
-      - name: Deploy File Service
-        run: |
-          kubectl apply -f k8s/services/file-service-service.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/deployments/file-service-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=file-service -n bedrock-chat-v2 --timeout=120s
-      
-      # ======================
-      # BEDROCK SERVICE
-      # ======================
-      - name: Deploy Bedrock Service
-        run: |
-          kubectl apply -f k8s/services/bedrock-service-service.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/deployments/bedrock-service-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=bedrock-service -n bedrock-chat-v2 --timeout=120s
-      
-      # ======================
-      # API GATEWAY
-      # ======================
-      - name: Deploy API Gateway
-        run: |
-          kubectl apply -f k8s/services/api-gateway-service.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/deployments/api-gateway-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=api-gateway -n bedrock-chat-v2 --timeout=120s
-      
-      # ======================
-      # FRONTEND
-      # ======================
       - name: Deploy Frontend
         run: |
           kubectl apply -f k8s/services/frontend-service.yaml -n bedrock-chat-v2
@@ -82,102 +22,14 @@ jobs:
           kubectl apply -f k8s/deployments/frontend-deployment.yaml -n bedrock-chat-v2
           kubectl wait --for=condition=ready pod -l app=frontend -n bedrock-chat-v2 --timeout=120s
       
-      # ======================
-      # Show final status
-      # ======================
-      - name: Show deployment status
-        run: |
-          kubectl get pods -n bedrock-chat-v2
-          NODE_PORT=$(kubectl get svc frontend-nodeport -n bedrock-chat-v2 -o jsonpath='{.spec.ports[0].nodePort}')
-          echo "Access your app at: http://YOUR-EC2-IP:$NODE_PORT"e: CD - Bedrock Chat OneClick
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-
-jobs:
-  BEDROCK-CHAT-ONECLICK-DEPLOY:
-    runs-on: self-hosted
-    steps:
-      # ======================
-      # Checkout current repo
-      # ======================
-      - name: Checkout current repo
-        uses: actions/checkout@v4
-      
-      # ======================
-      # Setup cluster context
-      # ======================
-      - name: Apply Namespace & Infrastructure
-        run: |
-          kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/storage/
-          kubectl apply -f k8s/pvc/
-          
-          # Create storage directories
-          sudo mkdir -p /opt/mysql-data /opt/file-uploads
-          sudo chmod 777 /opt/mysql-data /opt/file-uploads
-      
-      # ======================
-      # MYSQL DATABASE
-      # ======================
-      - name: Deploy MySQL Database
-        run: |
-          kubectl apply -f k8s/configmaps/ --recursive -n bedrock-chat-v2
-          kubectl apply -f k8s/secrets/ --recursive -n bedrock-chat-v2
-          kubectl apply -f k8s/dockerhub-secrets.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/services/mysql-service.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/services/mysql-headless-service.yaml -n bedrock-chat-v2
-          
-          # Delete and recreate StatefulSet if it exists
-          kubectl delete statefulset mysql -n bedrock-chat-v2 --ignore-not-found=true
-          sleep 10
-          kubectl apply -f k8s/statefulsets/mysql-statefulset.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=mysql -n bedrock-chat-v2 --timeout=120s
-      
-      # ======================
-      # FILE SERVICE
-      # ======================
-      - name: Deploy File Service
-        run: |
-          kubectl apply -f k8s/services/file-service-service.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/deployments/file-service-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=file-service -n bedrock-chat-v2 --timeout=120s
-      
-      # ======================
-      # BEDROCK SERVICE
-      # ======================
       - name: Deploy Bedrock Service
         run: |
           kubectl apply -f k8s/services/bedrock-service-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/deployments/bedrock-service-deployment.yaml -n bedrock-chat-v2
           kubectl wait --for=condition=ready pod -l app=bedrock-service -n bedrock-chat-v2 --timeout=120s
       
-      # ======================
-      # API GATEWAY
-      # ======================
-      - name: Deploy API Gateway
-        run: |
-          kubectl apply -f k8s/services/api-gateway-service.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/deployments/api-gateway-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=api-gateway -n bedrock-chat-v2 --timeout=120s
-      
-      # ======================
-      # FRONTEND
-      # ======================
-      - name: Deploy Frontend
-        run: |
-          kubectl apply -f k8s/services/frontend-service.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/services/frontend-nodeport.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/deployments/frontend-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=frontend -n bedrock-chat-v2 --timeout=120s
-      
-      # ======================
-      # Show final status
-      # ======================
-      - name: Show deployment status
+      - name: Show status
         run: |
           kubectl get pods -n bedrock-chat-v2
           NODE_PORT=$(kubectl get svc frontend-nodeport -n bedrock-chat-v2 -o jsonpath='{.spec.ports[0].nodePort}')
-          echo "Access your app at: http://YOUR-EC2-IP:$NODE_PORT"
+          echo "Frontend: http://YOUR-EC2-IP:$NODE_PORT"
