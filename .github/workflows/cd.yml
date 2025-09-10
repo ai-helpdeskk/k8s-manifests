@@ -36,7 +36,15 @@ jobs:
           kubectl apply -f k8s/services/mysql-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/services/mysql-headless-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/statefulsets/mysql-statefulset.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=mysql -n bedrock-chat-v2 --timeout=180s
+          
+          echo "Waiting for MySQL to be ready (this may take a few minutes)..."
+          kubectl wait --for=condition=ready pod -l app=mysql -n bedrock-chat-v2 --timeout=600s || {
+            echo "MySQL failed to start, checking status..."
+            kubectl get pods -l app=mysql -n bedrock-chat-v2
+            kubectl describe pod mysql-0 -n bedrock-chat-v2
+            kubectl logs mysql-0 -n bedrock-chat-v2 --tail=20 || echo "No logs available"
+            exit 1
+          }
       
       # ======================
       # FILE SERVICE
@@ -45,7 +53,7 @@ jobs:
         run: |
           kubectl apply -f k8s/services/file-service-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/deployments/file-service-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=file-service -n bedrock-chat-v2 --timeout=180s
+          kubectl wait --for=condition=ready pod -l app=file-service -n bedrock-chat-v2 --timeout=300s
       
       # ======================
       # BEDROCK SERVICE
@@ -54,7 +62,7 @@ jobs:
         run: |
           kubectl apply -f k8s/services/bedrock-service-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/deployments/bedrock-service-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=bedrock-service -n bedrock-chat-v2 --timeout=180s
+          kubectl wait --for=condition=ready pod -l app=bedrock-service -n bedrock-chat-v2 --timeout=300s
       
       # ======================
       # API GATEWAY
@@ -63,7 +71,7 @@ jobs:
         run: |
           kubectl apply -f k8s/services/api-gateway-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/deployments/api-gateway-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=api-gateway -n bedrock-chat-v2 --timeout=180s
+          kubectl wait --for=condition=ready pod -l app=api-gateway -n bedrock-chat-v2 --timeout=300s
       
       # ======================
       # FRONTEND
@@ -73,4 +81,16 @@ jobs:
           kubectl apply -f k8s/services/frontend-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/services/frontend-nodeport.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/deployments/frontend-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=frontend -n bedrock-chat-v2 --timeout=180s
+          kubectl wait --for=condition=ready pod -l app=frontend -n bedrock-chat-v2 --timeout=300s
+      
+      # ======================
+      # Show final status
+      # ======================
+      - name: Show deployment status
+        run: |
+          echo "All services deployed! Status:"
+          kubectl get pods -n bedrock-chat-v2
+          kubectl get svc -n bedrock-chat-v2
+          
+          NODE_PORT=$(kubectl get svc frontend-nodeport -n bedrock-chat-v2 -o jsonpath='{.spec.ports[0].nodePort}')
+          echo "Access your app at: http://YOUR-EC2-IP:$NODE_PORT"
