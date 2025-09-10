@@ -38,6 +38,10 @@ jobs:
           kubectl apply -f k8s/dockerhub-secrets.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/services/mysql-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/services/mysql-headless-service.yaml -n bedrock-chat-v2
+          
+          # Delete and recreate StatefulSet if it exists
+          kubectl delete statefulset mysql -n bedrock-chat-v2 --ignore-not-found=true
+          sleep 10
           kubectl apply -f k8s/statefulsets/mysql-statefulset.yaml -n bedrock-chat-v2
           kubectl wait --for=condition=ready pod -l app=mysql -n bedrock-chat-v2 --timeout=120s
       
