@@ -15,13 +15,14 @@ jobs:
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/configmaps/ --recursive -n bedrock-chat-v2
           kubectl apply -f k8s/dockerhub-secrets.yaml -n bedrock-chat-v2
-      
+          kubectl create secret generic app-secrets \
+            --from-literal=AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY }} \
+            --from-literal=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+            -n bedrock-chat-v2
+
       - name: Deploy Frontend
         run: |
-          kubectl apply -f k8s/services/frontend-service.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/services/frontend-nodeport.yaml -n bedrock-chat-v2
-          kubectl apply -f k8s/deployments/frontend-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=frontend -n bedrock-chat-v2 --timeout=120s
+          kubectl apply -f k8s/ -R
       
       - name: Deploy Bedrock Service
         run: |
