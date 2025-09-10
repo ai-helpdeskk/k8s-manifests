@@ -1,3 +1,4 @@
+# k8s/statefulsets/mysql-statefulset.yaml
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -101,6 +102,7 @@ spec:
       name: mysql-data
     spec:
       accessModes: ["ReadWriteOnce"]
+      storageClassName: local-storage  # Add this line
       resources:
         requests:
           storage: 10Gi
