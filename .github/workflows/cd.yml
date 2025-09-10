@@ -14,7 +14,7 @@ on:
       - 'k8s/network-policies/**'
       - 'k8s/hpa/**'
       - 'k8s/statefulsets/**'
-      # Exclude deployments files - handled by service CDs
+      # Exclude deployment files - handled by service CDs
       - '!k8s/deployments/**'
   workflow_dispatch:
     inputs:
@@ -59,12 +59,93 @@ jobs:
         with:
           version: 'v1.28.0'
 
-      - name: Configure kubectl
+      - name: Configure kubectl with enhanced debugging
         run: |
+          echo "🔍 Checking KUBE_CONFIG_DATA secret..."
+          
+          # Check if secret exists and has content
+          if [ -z "${{ env.KUBE_CONFIG_DATA }}" ]; then
+            echo "❌ KUBE_CONFIG_DATA secret is empty or not set!"
+            echo ""
+            echo "🔧 To fix this issue:"
+            echo "1. Run: cat ~/.kube/config"
+            echo "2. Run: cat ~/.kube/config | base64 -w 0"
+            echo "3. Copy the output and add it as KUBE_CONFIG_DATA secret in GitHub"
+            echo "4. Make sure to copy the ENTIRE base64 string (it should be very long)"
+            exit 1
+          fi
+          
+          echo "✅ KUBE_CONFIG_DATA secret found"
+          
+          # Decode the kubeconfig
+          echo "🔧 Decoding kubeconfig..."
           echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
-          export KUBECONFIG=kubeconfig
+          
+          # Check if decoded file has content
+          if [ ! -s kubeconfig ]; then
+            echo "❌ Decoded kubeconfig file is empty!"
+            echo "This usually means the base64 encoding was corrupted."
+            echo ""
+            echo "🔧 Please re-create the secret:"
+            echo "1. cat ~/.kube/config | base64 -w 0 | tr -d '\n'"
+            echo "2. Copy the ENTIRE output (should be one long line)"
+            echo "3. Update KUBE_CONFIG_DATA secret in GitHub"
+            exit 1
+          fi
+          
+          # Set permissions and environment
           chmod 600 kubeconfig
-          kubectl cluster-info --request-timeout=30s
+          export KUBECONFIG=kubeconfig
+          
+          echo "✅ Kubeconfig file created and configured"
+          
+          # Validate kubeconfig syntax
+          echo "🔍 Validating kubeconfig syntax..."
+          if ! kubectl config view > /dev/null 2>&1; then
+            echo "❌ Invalid kubeconfig format!"
+            echo "The kubeconfig file has syntax errors."
+            echo "Please check your original kubeconfig file and re-encode it."
+            exit 1
+          fi
+          
+          echo "✅ Kubeconfig syntax is valid"
+          
+          # Show cluster info for debugging
+          echo "📋 Kubeconfig details:"
+          echo "Current context: $(kubectl config current-context 2>/dev/null || echo 'None')"
+          echo "Available contexts:"
+          kubectl config get-contexts --no-headers 2>/dev/null || echo "No contexts found"
+          
+          # Test cluster connectivity
+          echo "🔗 Testing cluster connectivity..."
+          if timeout 45 kubectl cluster-info --request-timeout=30s > /dev/null 2>&1; then
+            echo "✅ Successfully connected to Kubernetes cluster!"
+            kubectl cluster-info --request-timeout=30s
+            echo ""
+            echo "🎯 Cluster version info:"
+            kubectl version --short 2>/dev/null || kubectl version --client
+          else
+            echo "❌ Failed to connect to Kubernetes cluster!"
+            echo ""
+            echo "🔍 Debugging information:"
+            echo "1. Current context: $(kubectl config current-context 2>/dev/null || echo 'No context set')"
+            echo "2. Server URL: $(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo 'Unknown')"
+            echo ""
+            echo "🚨 Possible causes:"
+            echo "- Cluster is down or unreachable"
+            echo "- Kubeconfig authentication tokens have expired"
+            echo "- Network connectivity issues"
+            echo "- Cluster credentials need to be refreshed"
+            echo ""
+            echo "💡 Solutions:"
+            echo "- For EKS: aws eks update-kubeconfig --region <region> --name <cluster>"
+            echo "- For GKE: gcloud container clusters get-credentials <cluster> --zone <zone>"
+            echo "- For AKS: az aks get-credentials --resource-group <rg> --name <cluster>"
+            echo "- Then re-encode: cat ~/.kube/config | base64 -w 0"
+            exit 1
+          fi
+        env:
+          KUBECONFIG: kubeconfig
 
       - name: Set deployment parameters
         id: params
