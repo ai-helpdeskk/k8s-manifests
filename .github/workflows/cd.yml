@@ -1,168 +1,52 @@
-# .github/workflows/deploy-k8s-infrastructure.yml
-name: Deploy K8s Infrastructure Changes
+name: CD - Bedrock Chat One-Click Deploy
 
 on:
   push:
-    branches: [ main ]
-    paths:
-      - 'k8s/configmaps/**'
-      - 'k8s/services/**'
-      - 'k8s/ingress/**'
-      - 'k8s/pvc/**'
-      - 'k8s/secrets/**'
-      - 'k8s/network-policies/**'
-      - 'k8s/hpa/**'
-      - 'k8s/statefulsets/**'
-      # Exclude deployment files - handled by service CDs
-      - '!k8s/deployments/**'
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
   workflow_dispatch:
     inputs:
       environment:
         description: 'Environment to deploy to'
         required: true
-        default: 'staging'
+        default: 'production'
         type: choice
         options:
         - staging
         - production
-      resource_type:
-        description: 'Type of resource to deploy'
-        required: true
-        default: 'all'
-        type: choice
-        options:
-        - all
-        - configmaps
-        - services
-        - ingress
-        - secrets
-        - network-policies
-        - hpa
-        - statefulsets
-        - mysql-only
+      force_rebuild:
+        description: 'Force rebuild all services'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
-  deploy-infrastructure:
-    name: Deploy Infrastructure Changes
-    runs-on: ubuntu-latest
-    
+  BEDROCK-CHAT-ONECLICK-DEPLOY:
+    runs-on: self-hosted
     steps:
-      - name: Checkout k8s manifests
+      # ======================
+      # Checkout current repo
+      # ======================
+      - name: Checkout current repo
         uses: actions/checkout@v4
 
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'v1.28.0'
-
-      - name: Configure kubectl for EC2
-        run: |
-          echo "🔍 Checking KUBE_CONFIG_DATA secret..."
-          
-          # Check if secret exists and has content
-          if [ -z "${{ secrets.KUBE_CONFIG_DATA }}" ]; then
-            echo "❌ KUBE_CONFIG_DATA secret is empty or not set!"
-            echo ""
-            echo "🔧 To fix this issue for EC2:"
-            echo "1. SSH into your EC2 instance"
-            echo "2. Run: cat ~/.kube/config | base64 -w 0"
-            echo "3. Copy the output and add it as KUBE_CONFIG_DATA secret in GitHub"
-            echo "4. Make sure to copy the ENTIRE base64 string (it should be very long)"
-            echo ""
-            echo "💡 If you don't have kubectl configured on EC2:"
-            echo "- For minikube: minikube start && cat ~/.kube/config | base64 -w 0"
-            echo "- For k3s: sudo cat /etc/rancher/k3s/k3s.yaml | base64 -w 0"
-            echo "- For kubeadm: cat ~/.kube/config | base64 -w 0"
-            exit 1
-          fi
-          
-          echo "✅ KUBE_CONFIG_DATA secret found"
-          
-          # Create .kube directory
-          mkdir -p ~/.kube
-          
-          # Decode the kubeconfig
-          echo "🔧 Decoding kubeconfig..."
-          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
-          
-          # Check if decoded file has content
-          if [ ! -s ~/.kube/config ]; then
-            echo "❌ Decoded kubeconfig file is empty!"
-            echo "This usually means the base64 encoding was corrupted."
-            echo ""
-            echo "🔧 Please re-create the secret:"
-            echo "1. On your EC2: cat ~/.kube/config | base64 -w 0 | tr -d '\n'"
-            echo "2. Copy the ENTIRE output (should be one long line)"
-            echo "3. Update KUBE_CONFIG_DATA secret in GitHub"
-            exit 1
-          fi
-          
-          # Set permissions
-          chmod 600 ~/.kube/config
-          
-          echo "✅ Kubeconfig file created and configured"
-          
-          # Validate kubeconfig syntax
-          echo "🔍 Validating kubeconfig syntax..."
-          if ! kubectl config view > /dev/null 2>&1; then
-            echo "❌ Invalid kubeconfig format!"
-            echo "The kubeconfig file has syntax errors."
-            echo "Please check your original kubeconfig file and re-encode it."
-            exit 1
-          fi
-          
-          echo "✅ Kubeconfig syntax is valid"
-          
-          # Show cluster info for debugging
-          echo "📋 Kubeconfig details:"
-          echo "Current context: $(kubectl config current-context 2>/dev/null || echo 'None')"
-          echo "Available contexts:"
-          kubectl config get-contexts --no-headers 2>/dev/null || echo "No contexts found"
-          
-          # Test cluster connectivity with longer timeout for EC2
-          echo "🔗 Testing cluster connectivity..."
-          if timeout 60 kubectl cluster-info --request-timeout=45s > /dev/null 2>&1; then
-            echo "✅ Successfully connected to Kubernetes cluster!"
-            kubectl cluster-info --request-timeout=45s
-            echo ""
-            echo "🎯 Cluster version info:"
-            kubectl version --short 2>/dev/null || kubectl version --client
-          else
-            echo "❌ Failed to connect to Kubernetes cluster!"
-            echo ""
-            echo "🔍 Debugging information:"
-            echo "1. Current context: $(kubectl config current-context 2>/dev/null || echo 'No context set')"
-            echo "2. Server URL: $(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo 'Unknown')"
-            echo ""
-            echo "🚨 Possible causes for EC2:"
-            echo "- EC2 instance or Kubernetes cluster is down"
-            echo "- Security groups blocking access"
-            echo "- Kubeconfig server URL might be localhost/127.0.0.1 (needs to be EC2 internal IP)"
-            echo "- Network connectivity issues between GitHub Actions and EC2"
-            echo ""
-            echo "💡 Solutions for different setups:"
-            echo "- For minikube: Ensure minikube is running and accessible"
-            echo "- For k3s: Check if k3s service is running: sudo systemctl status k3s"
-            echo "- For kubeadm: Verify all control plane components are healthy"
-            echo "- Check EC2 security groups allow access on Kubernetes API port (usually 6443)"
-            echo ""
-            echo "🔧 To fix kubeconfig server URL:"
-            echo "Edit ~/.kube/config and replace 127.0.0.1 with your EC2 private IP"
-            exit 1
-          fi
-
+      # ======================
+      # Setup deployment parameters
+      # ======================
       - name: Set deployment parameters
         id: params
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             ENVIRONMENT="${{ github.event.inputs.environment }}"
-            RESOURCE_TYPE="${{ github.event.inputs.resource_type }}"
+            FORCE_REBUILD="${{ github.event.inputs.force_rebuild }}"
           else
-            ENVIRONMENT="staging"  # Auto-deploy to staging for pushes
-            RESOURCE_TYPE="all"
+            ENVIRONMENT="production"
+            FORCE_REBUILD="false"
           fi
           
-          # Use your actual namespaces
           if [ "$ENVIRONMENT" = "production" ]; then
             NAMESPACE="bedrock-chat-v2"
           else
@@ -171,207 +55,361 @@ jobs:
           
           echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
           echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
-          echo "resource_type=$RESOURCE_TYPE" >> $GITHUB_OUTPUT
+          echo "force_rebuild=$FORCE_REBUILD" >> $GITHUB_OUTPUT
           
-          echo "🚀 Infrastructure Deployment:"
+          echo "🚀 Bedrock Chat Deployment:"
           echo "- Environment: $ENVIRONMENT"
           echo "- Namespace: $NAMESPACE"
-          echo "- Resource Type: $RESOURCE_TYPE"
+          echo "- Force Rebuild: $FORCE_REBUILD"
 
-      - name: Create namespace
+      # ======================
+      # Setup cluster infrastructure
+      # ======================
+      - name: Apply Infrastructure - Namespace, PV & Ingress
         run: |
-          kubectl create namespace ${{ steps.params.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl label namespace ${{ steps.params.outputs.namespace }} name=${{ steps.params.outputs.namespace }} --overwrite
-
-      - name: Apply ConfigMaps
-        if: steps.params.outputs.resource_type == 'all' || steps.params.outputs.resource_type == 'configmaps'
-        run: |
-          echo "📋 Applying ConfigMaps..."
-          kubectl apply -f k8s/configmaps/app-config.yaml -n ${{ steps.params.outputs.namespace }}
-          kubectl apply -f k8s/configmaps/mysql-init.yaml -n ${{ steps.params.outputs.namespace }}
+          echo "🏗️ Setting up cluster infrastructure..."
           
-          echo "✅ ConfigMaps applied:"
-          kubectl get configmaps -n ${{ steps.params.outputs.namespace }}
+          # Apply namespace
+          kubectl apply -f k8s/namespace.yaml
+          kubectl get ns ${{ steps.params.outputs.namespace }} || kubectl create namespace ${{ steps.params.outputs.namespace }}
+          
+          # Apply persistent volumes
+          if [ -d "k8s/pv" ]; then
+            kubectl apply -f k8s/pv/ --recursive
+            kubectl get pv
+          fi
+          
+          # Apply ingress (production only)
+          if [ "${{ steps.params.outputs.environment }}" = "production" ] && [ -d "k8s/ingress" ]; then
+            kubectl apply -f k8s/ingress/ --recursive
+            kubectl get ingress -n ${{ steps.params.outputs.namespace }}
+          fi
 
-      - name: Apply Secrets
-        if: steps.params.outputs.resource_type == 'all' || steps.params.outputs.resource_type == 'secrets'
+      # ======================
+      # Apply ConfigMaps and Secrets
+      # ======================
+      - name: Apply ConfigMaps and Secrets
         run: |
-          echo "🔐 Applying Secrets..."
-          kubectl apply -f k8s/secrets/app-secrets.yaml -n ${{ steps.params.outputs.namespace }}
-          kubectl apply -f k8s/secrets/mysql-secrets.yaml -n ${{ steps.params.outputs.namespace }}
+          echo "📋 Applying ConfigMaps and Secrets..."
+          
+          # Apply ConfigMaps
+          kubectl apply -f k8s/configmaps/ --recursive -n ${{ steps.params.outputs.namespace }}
+          
+          # Apply Secrets
+          kubectl apply -f k8s/secrets/ --recursive -n ${{ steps.params.outputs.namespace }}
           kubectl apply -f k8s/dockerhub-secrets.yaml -n ${{ steps.params.outputs.namespace }}
           
-          echo "✅ Secrets applied:"
-          kubectl get secrets -n ${{ steps.params.outputs.namespace }}
+          echo "✅ ConfigMaps and Secrets applied:"
+          kubectl get configmaps,secrets -n ${{ steps.params.outputs.namespace }}
 
-      - name: Apply PVCs
-        if: steps.params.outputs.resource_type == 'all' || steps.params.outputs.resource_type == 'statefulsets'
+      # ======================
+      # Apply Storage (PVCs)
+      # ======================
+      - name: Apply Storage Resources
         run: |
-          echo "💾 Applying PVCs..."
-          kubectl apply -f k8s/pvc/file-uploads-pvc.yaml -n ${{ steps.params.outputs.namespace }}
+          echo "💾 Applying storage resources..."
+          
+          kubectl apply -f k8s/pvc/ --recursive -n ${{ steps.params.outputs.namespace }}
           
           echo "✅ PVCs applied:"
           kubectl get pvc -n ${{ steps.params.outputs.namespace }}
 
-      - name: Deploy MySQL StatefulSet
-        if: steps.params.outputs.resource_type == 'all' || steps.params.outputs.resource_type == 'statefulsets' || steps.params.outputs.resource_type == 'mysql-only'
+      # ======================
+      # MYSQL DATABASE
+      # ======================
+      - name: Deploy MySQL Database
         run: |
-          echo "🗄️ Deploying MySQL StatefulSet..."
+          echo "🗄️ Deploying MySQL Database..."
+          
+          # Apply MySQL services first
           kubectl apply -f k8s/services/mysql-service.yaml -n ${{ steps.params.outputs.namespace }}
           kubectl apply -f k8s/services/mysql-headless-service.yaml -n ${{ steps.params.outputs.namespace }}
+          
+          # Deploy MySQL StatefulSet
           kubectl apply -f k8s/statefulsets/mysql-statefulset.yaml -n ${{ steps.params.outputs.namespace }}
           
+          # Wait for MySQL to be ready
           echo "⏳ Waiting for MySQL to be ready..."
-          kubectl rollout status statefulset/mysql -n ${{ steps.params.outputs.namespace }} --timeout=600s || {
-            echo "⚠️ MySQL rollout timeout, checking status..."
+          kubectl wait --for=condition=ready pod -l app=mysql -n ${{ steps.params.outputs.namespace }} --timeout=300s || {
+            echo "⚠️ MySQL readiness timeout, checking status..."
             kubectl get pods -l app=mysql -n ${{ steps.params.outputs.namespace }}
             kubectl describe statefulset mysql -n ${{ steps.params.outputs.namespace }}
             kubectl logs -l app=mysql -n ${{ steps.params.outputs.namespace }} --tail=20 || echo "No logs available"
           }
+          
+          echo "✅ MySQL deployed successfully"
 
-      - name: Apply Services
-        if: steps.params.outputs.resource_type == 'all' || steps.params.outputs.resource_type == 'services'
+      # ======================
+      # FILE SERVICE
+      # ======================
+      - name: Deploy File Service
         run: |
-          echo "🌐 Applying Microservice Services..."
-          kubectl apply -f k8s/services/api-gateway-service.yaml -n ${{ steps.params.outputs.namespace }}
-          kubectl apply -f k8s/services/bedrock-service-service.yaml -n ${{ steps.params.outputs.namespace }}
+          echo "📁 Deploying File Service..."
+          
+          # Apply File Service
           kubectl apply -f k8s/services/file-service-service.yaml -n ${{ steps.params.outputs.namespace }}
+          kubectl apply -f k8s/deployments/file-service-deployment.yaml -n ${{ steps.params.outputs.namespace }}
+          
+          # Wait for File Service to be ready
+          kubectl wait --for=condition=ready pod -l app=file-service -n ${{ steps.params.outputs.namespace }} --timeout=180s
+          
+          echo "✅ File Service deployed successfully"
+
+      # ======================
+      # BEDROCK SERVICE
+      # ======================
+      - name: Deploy Bedrock Service
+        run: |
+          echo "🤖 Deploying Bedrock AI Service..."
+          
+          # Apply Bedrock Service
+          kubectl apply -f k8s/services/bedrock-service-service.yaml -n ${{ steps.params.outputs.namespace }}
+          kubectl apply -f k8s/deployments/bedrock-service-deployment.yaml -n ${{ steps.params.outputs.namespace }}
+          
+          # Wait for Bedrock Service to be ready
+          kubectl wait --for=condition=ready pod -l app=bedrock-service -n ${{ steps.params.outputs.namespace }} --timeout=180s
+          
+          echo "✅ Bedrock Service deployed successfully"
+
+      # ======================
+      # API GATEWAY
+      # ======================
+      - name: Deploy API Gateway
+        run: |
+          echo "🌐 Deploying API Gateway..."
+          
+          # Apply API Gateway
+          kubectl apply -f k8s/services/api-gateway-service.yaml -n ${{ steps.params.outputs.namespace }}
+          kubectl apply -f k8s/deployments/api-gateway-deployment.yaml -n ${{ steps.params.outputs.namespace }}
+          
+          # Wait for API Gateway to be ready
+          kubectl wait --for=condition=ready pod -l app=api-gateway -n ${{ steps.params.outputs.namespace }} --timeout=180s
+          
+          echo "✅ API Gateway deployed successfully"
+
+      # ======================
+      # FRONTEND
+      # ======================
+      - name: Deploy Frontend
+        run: |
+          echo "🎨 Deploying Frontend..."
+          
+          # Apply Frontend services
           kubectl apply -f k8s/services/frontend-service.yaml -n ${{ steps.params.outputs.namespace }}
           
-          # Apply NodePort service if exists
+          # Apply NodePort service if exists (for direct access)
           if [ -f "k8s/services/frontend-nodeport.yaml" ]; then
             kubectl apply -f k8s/services/frontend-nodeport.yaml -n ${{ steps.params.outputs.namespace }}
           fi
           
-          echo "✅ Services applied:"
-          kubectl get services -n ${{ steps.params.outputs.namespace }}
+          # Deploy Frontend
+          kubectl apply -f k8s/deployments/frontend-deployment.yaml -n ${{ steps.params.outputs.namespace }}
+          
+          # Wait for Frontend to be ready
+          kubectl wait --for=condition=ready pod -l app=frontend -n ${{ steps.params.outputs.namespace }} --timeout=180s
+          
+          echo "✅ Frontend deployed successfully"
 
-      - name: Apply Ingress (Production Only)
-        if: (steps.params.outputs.resource_type == 'all' || steps.params.outputs.resource_type == 'ingress') && steps.params.outputs.environment == 'production'
+      # ======================
+      # Apply Scaling (HPA)
+      # ======================
+      - name: Apply Horizontal Pod Autoscaling
         run: |
-          echo "🌍 Applying Ingress for Production..."
-          if [ -f "k8s/ingress/bedrock-chat-ingress.yaml" ]; then
-            kubectl apply -f k8s/ingress/bedrock-chat-ingress.yaml -n ${{ steps.params.outputs.namespace }}
-            
-            echo "✅ Ingress applied:"
-            kubectl get ingress -n ${{ steps.params.outputs.namespace }}
-            kubectl describe ingress bedrock-chat-ingress -n ${{ steps.params.outputs.namespace }}
-          else
-            echo "⚠️ Ingress file not found, skipping..."
-          fi
-
-      - name: Apply Network Policies
-        if: steps.params.outputs.resource_type == 'all' || steps.params.outputs.resource_type == 'network-policies'
-        run: |
-          echo "🔒 Applying Network Policies..."
-          if [ -d "k8s/network-policies" ]; then
-            kubectl apply -f k8s/network-policies/ -n ${{ steps.params.outputs.namespace }}
-            
-            echo "✅ Network Policies applied:"
-            kubectl get networkpolicies -n ${{ steps.params.outputs.namespace }}
-          else
-            echo "⚠️ Network policies directory not found, skipping..."
-          fi
-
-      - name: Apply HPA
-        if: steps.params.outputs.resource_type == 'all' || steps.params.outputs.resource_type == 'hpa'
-        run: |
-          echo "📈 Applying HPA..."
+          echo "📈 Applying Horizontal Pod Autoscaling..."
+          
+          # Check if metrics server is available
           if kubectl get apiservice v1beta1.metrics.k8s.io > /dev/null 2>&1; then
+            # Apply HPA configurations
             if [ -d "k8s/hpa" ]; then
-              kubectl apply -f k8s/hpa/ -n ${{ steps.params.outputs.namespace }}
+              kubectl apply -f k8s/hpa/ --recursive -n ${{ steps.params.outputs.namespace }}
               echo "✅ HPA applied:"
               kubectl get hpa -n ${{ steps.params.outputs.namespace }}
-            else
-              echo "⚠️ HPA directory not found"
             fi
           else
             echo "⚠️ Metrics server not available, skipping HPA"
-            # Try to install/fix metrics server
-            echo "🔧 Applying custom metrics server..."
+            # Try to install metrics server
             if [ -f "k8s/metrics-server-custom.yaml" ]; then
-              kubectl apply -f k8s/metrics-server-custom.yaml || echo "Metrics server apply failed"
+              echo "🔧 Installing metrics server..."
+              kubectl apply -f k8s/metrics-server-custom.yaml
             fi
           fi
 
-      - name: Verify Infrastructure
+      # ======================
+      # Apply Network Policies
+      # ======================
+      - name: Apply Network Security Policies
         run: |
-          echo "🔍 Verifying infrastructure deployment..."
+          echo "🔒 Applying Network Security Policies..."
           
-          echo "=== Namespace ==="
+          if [ -d "k8s/network-policies" ]; then
+            kubectl apply -f k8s/network-policies/ --recursive -n ${{ steps.params.outputs.namespace }}
+            echo "✅ Network Policies applied:"
+            kubectl get networkpolicies -n ${{ steps.params.outputs.namespace }}
+          else
+            echo "⚠️ No network policies found, skipping..."
+          fi
+
+      # ======================
+      # Verify Complete Deployment
+      # ======================
+      - name: Verify Complete Deployment
+        run: |
+          echo "🔍 Verifying complete deployment..."
+          
+          echo "=== NAMESPACE ==="
           kubectl get namespace ${{ steps.params.outputs.namespace }}
           
-          echo "=== ConfigMaps ==="
-          kubectl get configmaps -n ${{ steps.params.outputs.namespace }}
+          echo "=== ALL PODS ==="
+          kubectl get pods -n ${{ steps.params.outputs.namespace }} -o wide
           
-          echo "=== Secrets ==="
-          kubectl get secrets -n ${{ steps.params.outputs.namespace }}
+          echo "=== ALL SERVICES ==="
+          kubectl get services -n ${{ steps.params.outputs.namespace }} -o wide
           
-          echo "=== PVCs ==="
-          kubectl get pvc -n ${{ steps.params.outputs.namespace }}
+          echo "=== DEPLOYMENTS ==="
+          kubectl get deployments -n ${{ steps.params.outputs.namespace }}
           
-          echo "=== StatefulSets ==="
+          echo "=== STATEFULSETS ==="
           kubectl get statefulsets -n ${{ steps.params.outputs.namespace }}
           
-          echo "=== Services ==="
-          kubectl get services -n ${{ steps.params.outputs.namespace }}
+          echo "=== PERSISTENT VOLUMES ==="
+          kubectl get pvc -n ${{ steps.params.outputs.namespace }}
           
           if [ "${{ steps.params.outputs.environment }}" = "production" ]; then
-            echo "=== Ingress ==="
+            echo "=== INGRESS ==="
             kubectl get ingress -n ${{ steps.params.outputs.namespace }} || echo "No ingress found"
           fi
           
-          echo "=== Network Policies ==="
-          kubectl get networkpolicies -n ${{ steps.params.outputs.namespace }} || echo "No Network Policies"
-          
           echo "=== HPA ==="
-          kubectl get hpa -n ${{ steps.params.outputs.namespace }} || echo "No HPA"
+          kubectl get hpa -n ${{ steps.params.outputs.namespace }} || echo "No HPA found"
           
-          echo "=== All Pods ==="
-          kubectl get pods -n ${{ steps.params.outputs.namespace }} -o wide
+          echo "=== NETWORK POLICIES ==="
+          kubectl get networkpolicies -n ${{ steps.params.outputs.namespace }} || echo "No network policies found"
 
-      - name: Run Infrastructure Health Checks
+      # ======================
+      # Health Checks
+      # ======================
+      - name: Run Health Checks
         run: |
-          echo "🏥 Running infrastructure health checks..."
+          echo "🏥 Running comprehensive health checks..."
           
-          # Check MySQL if deployed
-          if kubectl get statefulset mysql -n ${{ steps.params.outputs.namespace }} > /dev/null 2>&1; then
-            echo "Checking MySQL health..."
-            if kubectl wait --for=condition=ready pod -l app=mysql -n ${{ steps.params.outputs.namespace }} --timeout=120s; then
-              echo "✅ MySQL is healthy"
-            else
-              echo "⚠️ MySQL health check failed"
-              kubectl logs -l app=mysql -n ${{ steps.params.outputs.namespace }} --tail=20 || echo "No MySQL logs available"
+          # Wait a bit for all services to fully start
+          sleep 30
+          
+          # Check MySQL
+          echo "Checking MySQL health..."
+          if kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/mysql -- mysqladmin ping -h localhost -u root -proot_password; then
+            echo "✅ MySQL is healthy"
+          else
+            echo "⚠️ MySQL health check failed"
+            kubectl logs -l app=mysql -n ${{ steps.params.outputs.namespace }} --tail=10
+          fi
+          
+          # Check File Service
+          echo "Checking File Service health..."
+          if kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/file-service -- curl -f http://localhost:7000/health; then
+            echo "✅ File Service is healthy"
+          else
+            echo "⚠️ File Service health check failed"
+            kubectl logs -l app=file-service -n ${{ steps.params.outputs.namespace }} --tail=10
+          fi
+          
+          # Check Bedrock Service
+          echo "Checking Bedrock Service health..."
+          if kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/bedrock-service -- wget -qO- http://localhost:9000/health; then
+            echo "✅ Bedrock Service is healthy"
+          else
+            echo "⚠️ Bedrock Service health check failed"
+            kubectl logs -l app=bedrock-service -n ${{ steps.params.outputs.namespace }} --tail=10
+          fi
+          
+          # Check API Gateway
+          echo "Checking API Gateway health..."
+          if kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/api-gateway -- curl -f http://localhost:8000/health; then
+            echo "✅ API Gateway is healthy"
+          else
+            echo "⚠️ API Gateway health check failed"
+            kubectl logs -l app=api-gateway -n ${{ steps.params.outputs.namespace }} --tail=10
+          fi
+          
+          # Check Frontend
+          echo "Checking Frontend health..."
+          if kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/frontend -- wget -qO- http://localhost:3000/health; then
+            echo "✅ Frontend is healthy"
+          else
+            echo "⚠️ Frontend health check failed"
+            kubectl logs -l app=frontend -n ${{ steps.params.outputs.namespace }} --tail=10
+          fi
+
+      # ======================
+      # Get Access Information
+      # ======================
+      - name: Display Access Information
+        run: |
+          echo "🌐 Getting access information..."
+          
+          # Get NodePort information
+          if kubectl get service frontend-nodeport -n ${{ steps.params.outputs.namespace }} > /dev/null 2>&1; then
+            NODE_PORT=$(kubectl get service frontend-nodeport -n ${{ steps.params.outputs.namespace }} -o jsonpath='{.spec.ports[0].nodePort}')
+            echo "🔗 Frontend NodePort: $NODE_PORT"
+            echo "Access via: http://<your-ec2-ip>:$NODE_PORT"
+          fi
+          
+          # Get ingress information (production)
+          if [ "${{ steps.params.outputs.environment }}" = "production" ]; then
+            if kubectl get ingress bedrock-chat-ingress -n ${{ steps.params.outputs.namespace }} > /dev/null 2>&1; then
+              INGRESS_IP=$(kubectl get ingress bedrock-chat-ingress -n ${{ steps.params.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+              echo "🌍 Ingress IP: $INGRESS_IP"
             fi
           fi
           
-          # Check services
-          echo "Checking services..."
+          # Show service endpoints
+          echo "📋 Service endpoints:"
           kubectl get endpoints -n ${{ steps.params.outputs.namespace }}
 
-      - name: Deployment summary
+      # ======================
+      # Deployment Summary
+      # ======================
+      - name: Deployment Summary
         if: always()
         run: |
-          echo "## 🏗️ Infrastructure Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Environment**: ${{ steps.params.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Namespace**: ${{ steps.params.outputs.namespace }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Resource Type**: ${{ steps.params.outputs.resource_type }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Bedrock Chat One-Click Deployment Summary"
+          echo ""
+          echo "- **Environment**: ${{ steps.params.outputs.environment }}"
+          echo "- **Namespace**: ${{ steps.params.outputs.namespace }}"
+          echo "- **Status**: ${{ job.status }}"
+          echo "- **Deployment Time**: $(date)"
+          echo ""
           
           if [ "${{ job.status }}" = "success" ]; then
-            echo "✅ **Infrastructure deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 📊 Deployed Resources" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            kubectl get all -n ${{ steps.params.outputs.namespace }} >> $GITHUB_STEP_SUMMARY 2>&1 || true
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **All services deployed successfully!**"
+            echo ""
+            echo "### 📊 Deployed Services"
+            kubectl get pods,svc -n ${{ steps.params.outputs.namespace }}
+            echo ""
+            echo "### 🔗 Access URLs"
+            NODE_PORT=$(kubectl get service frontend-nodeport -n ${{ steps.params.outputs.namespace }} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "N/A")
+            echo "- Frontend: http://<your-ec2-ip>:$NODE_PORT"
+            echo "- API Gateway: http://<your-ec2-ip>:8000 (if exposed)"
+            echo ""
+            echo "### 🎯 Quick Test Commands"
+            echo "```bash"
+            echo "# Test API Gateway health"
+            echo "kubectl exec -n ${{ steps.params.outputs.namespace }} deployment/api-gateway -- curl http://localhost:8000/health"
+            echo ""
+            echo "# Check all pod status"
+            echo "kubectl get pods -n ${{ steps.params.outputs.namespace }}"
+            echo ""
+            echo "# View logs for any service"
+            echo "kubectl logs -f deployment/<service-name> -n ${{ steps.params.outputs.namespace }}"
+            echo "```"
           else
-            echo "❌ **Infrastructure deployment failed!**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 🔍 Troubleshooting" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            kubectl get events -n ${{ steps.params.outputs.namespace }} --sort-by='.lastTimestamp' | tail -15 >> $GITHUB_STEP_SUMMARY 2>&1 || true
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Deployment failed!**"
+            echo ""
+            echo "### 🔍 Troubleshooting"
+            echo "Check the failed step above and run:"
+            echo "```bash"
+            echo "kubectl get events -n ${{ steps.params.outputs.namespace }} --sort-by='.lastTimestamp'"
+            echo "kubectl get pods -n ${{ steps.params.outputs.namespace }}"
+            echo "kubectl describe pod <failing-pod> -n ${{ steps.params.outputs.namespace }}"
+            echo "```"
           fi
