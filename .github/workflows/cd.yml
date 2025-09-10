@@ -16,258 +16,73 @@ jobs:
         uses: actions/checkout@v4
       
       # ======================
-      # Setup storage infrastructure
-      # ======================
-      - name: Setup Storage Infrastructure
-        run: |
-          echo "🔍 Setting up storage infrastructure..."
-          
-          # Create storage directories if they don't exist
-          sudo mkdir -p /opt/mysql-data
-          sudo mkdir -p /opt/file-uploads
-          sudo chmod 777 /opt/mysql-data
-          sudo chmod 777 /opt/file-uploads
-          
-          # Apply storage class and persistent volumes
-          kubectl apply -f k8s/storage/local-storage-class.yaml
-          kubectl apply -f k8s/storage/mysql-pv.yaml
-          kubectl apply -f k8s/storage/file-uploads-pv.yaml
-          
-          echo "✅ Storage infrastructure ready"
-          kubectl get storageclass
-          kubectl get pv
-      
-      # ======================
       # Setup cluster context
       # ======================
       - name: Apply Namespace & Infrastructure
         run: |
           kubectl apply -f k8s/namespace.yaml
-          kubectl get ns
+          kubectl apply -f k8s/storage/
           kubectl apply -f k8s/pvc/
-          kubectl get pvc -n bedrock-chat-v2
-      
-      # ======================
-      # Clean up any stuck resources
-      # ======================
-      - name: Clean up stuck MySQL resources
-        run: |
-          echo "🧹 Cleaning up any stuck MySQL resources..."
-          # Delete any stuck MySQL pods and PVCs
-          kubectl delete pod mysql-0 -n bedrock-chat-v2 --ignore-not-found=true
-          kubectl delete pvc mysql-data-mysql-0 -n bedrock-chat-v2 --ignore-not-found=true
           
-          # Wait a bit for cleanup
-          sleep 10
-          echo "✅ Cleanup complete"
+          # Create storage directories
+          sudo mkdir -p /opt/mysql-data /opt/file-uploads
+          sudo chmod 777 /opt/mysql-data /opt/file-uploads
       
       # ======================
       # MYSQL DATABASE
       # ======================
       - name: Deploy MySQL Database
         run: |
-          echo "🗄️ Deploying MySQL Database..."
           kubectl apply -f k8s/configmaps/ --recursive -n bedrock-chat-v2
           kubectl apply -f k8s/secrets/ --recursive -n bedrock-chat-v2
           kubectl apply -f k8s/dockerhub-secrets.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/services/mysql-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/services/mysql-headless-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/statefulsets/mysql-statefulset.yaml -n bedrock-chat-v2
-          
-          echo "⏳ Waiting for MySQL to be ready (this may take a few minutes)..."
-          kubectl wait --for=condition=ready pod -l app=mysql -n bedrock-chat-v2 --timeout=600s || {
-            echo "❌ MySQL failed to start, checking status..."
-            kubectl get pods -l app=mysql -n bedrock-chat-v2
-            kubectl describe pod mysql-0 -n bedrock-chat-v2
-            kubectl logs mysql-0 -n bedrock-chat-v2 --tail=20 || echo "No logs available"
-            echo "⚠️ Continuing with other services..."
-          }
-          
-          # Check if MySQL is actually ready
-          if kubectl get pod mysql-0 -n bedrock-chat-v2 --no-headers | grep -q "Running"; then
-            echo "✅ MySQL is running"
-          else
-            echo "⚠️ MySQL not ready, but continuing deployment"
-          fi
+          kubectl wait --for=condition=ready pod -l app=mysql -n bedrock-chat-v2 --timeout=120s
       
       # ======================
       # FILE SERVICE
       # ======================
       - name: Deploy File Service
         run: |
-          echo "📁 Deploying File Service..."
           kubectl apply -f k8s/services/file-service-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/deployments/file-service-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=file-service -n bedrock-chat-v2 --timeout=300s || {
-            echo "⚠️ File Service timeout, checking status..."
-            kubectl get pods -l app=file-service -n bedrock-chat-v2
-            kubectl logs -l app=file-service -n bedrock-chat-v2 --tail=10
-          }
-          echo "✅ File Service deployment step complete"
+          kubectl wait --for=condition=ready pod -l app=file-service -n bedrock-chat-v2 --timeout=120s
       
       # ======================
       # BEDROCK SERVICE
       # ======================
       - name: Deploy Bedrock Service
         run: |
-          echo "🤖 Deploying Bedrock Service..."
           kubectl apply -f k8s/services/bedrock-service-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/deployments/bedrock-service-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=bedrock-service -n bedrock-chat-v2 --timeout=300s || {
-            echo "⚠️ Bedrock Service timeout, checking status..."
-            kubectl get pods -l app=bedrock-service -n bedrock-chat-v2
-            kubectl logs -l app=bedrock-service -n bedrock-chat-v2 --tail=10
-          }
-          echo "✅ Bedrock Service deployment step complete"
+          kubectl wait --for=condition=ready pod -l app=bedrock-service -n bedrock-chat-v2 --timeout=120s
       
       # ======================
       # API GATEWAY
       # ======================
       - name: Deploy API Gateway
         run: |
-          echo "🌐 Deploying API Gateway..."
           kubectl apply -f k8s/services/api-gateway-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/deployments/api-gateway-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=api-gateway -n bedrock-chat-v2 --timeout=300s || {
-            echo "⚠️ API Gateway timeout, checking status..."
-            kubectl get pods -l app=api-gateway -n bedrock-chat-v2
-            kubectl logs -l app=api-gateway -n bedrock-chat-v2 --tail=10
-          }
-          echo "✅ API Gateway deployment step complete"
+          kubectl wait --for=condition=ready pod -l app=api-gateway -n bedrock-chat-v2 --timeout=120s
       
       # ======================
       # FRONTEND
       # ======================
       - name: Deploy Frontend
         run: |
-          echo "🎨 Deploying Frontend..."
           kubectl apply -f k8s/services/frontend-service.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/services/frontend-nodeport.yaml -n bedrock-chat-v2
           kubectl apply -f k8s/deployments/frontend-deployment.yaml -n bedrock-chat-v2
-          kubectl wait --for=condition=ready pod -l app=frontend -n bedrock-chat-v2 --timeout=300s || {
-            echo "⚠️ Frontend timeout, checking status..."
-            kubectl get pods -l app=frontend -n bedrock-chat-v2
-            kubectl logs -l app=frontend -n bedrock-chat-v2 --tail=10
-          }
-          echo "✅ Frontend deployment step complete"
+          kubectl wait --for=condition=ready pod -l app=frontend -n bedrock-chat-v2 --timeout=120s
       
       # ======================
-      # Verify all deployments
+      # Show final status
       # ======================
-      - name: Verify All Deployments
+      - name: Show deployment status
         run: |
-          echo "🔍 Verifying all deployments..."
-          
-          echo "=== PODS STATUS ==="
-          kubectl get pods -n bedrock-chat-v2 -o wide
-          
-          echo ""
-          echo "=== SERVICES STATUS ==="
-          kubectl get svc -n bedrock-chat-v2
-          
-          echo ""
-          echo "=== PVC STATUS ==="
-          kubectl get pvc -n bedrock-chat-v2
-          
-          echo ""
-          echo "=== STORAGE STATUS ==="
-          kubectl get pv
-          
-          # Count ready pods
-          READY_PODS=$(kubectl get pods -n bedrock-chat-v2 --no-headers | grep -c "Running")
-          TOTAL_PODS=$(kubectl get pods -n bedrock-chat-v2 --no-headers | wc -l)
-          
-          echo ""
-          echo "📊 Deployment Summary: $READY_PODS/$TOTAL_PODS pods are running"
-      
-      # ======================
-      # Health checks
-      # ======================
-      - name: Run Health Checks
-        run: |
-          echo "🏥 Running health checks..."
-          
-          # Wait a bit for services to fully start
-          sleep 30
-          
-          # Check MySQL
-          if kubectl get pod mysql-0 -n bedrock-chat-v2 --no-headers | grep -q "Running"; then
-            echo "Checking MySQL health..."
-            kubectl exec mysql-0 -n bedrock-chat-v2 -- mysqladmin ping -h localhost -u root -proot_password && echo "✅ MySQL is healthy" || echo "⚠️ MySQL health check failed"
-          fi
-          
-          # Check File Service
-          if kubectl get pods -l app=file-service -n bedrock-chat-v2 --no-headers | grep -q "Running"; then
-            echo "Checking File Service health..."
-            kubectl exec deployment/file-service -n bedrock-chat-v2 -- curl -f http://localhost:7000/health && echo "✅ File Service is healthy" || echo "⚠️ File Service health check failed"
-          fi
-          
-          # Check Bedrock Service
-          if kubectl get pods -l app=bedrock-service -n bedrock-chat-v2 --no-headers | grep -q "Running"; then
-            echo "Checking Bedrock Service health..."
-            kubectl exec deployment/bedrock-service -n bedrock-chat-v2 -- wget -qO- http://localhost:9000/health && echo "✅ Bedrock Service is healthy" || echo "⚠️ Bedrock Service health check failed"
-          fi
-          
-          # Check API Gateway
-          if kubectl get pods -l app=api-gateway -n bedrock-chat-v2 --no-headers | grep -q "Running"; then
-            echo "Checking API Gateway health..."
-            kubectl exec deployment/api-gateway -n bedrock-chat-v2 -- curl -f http://localhost:8000/health && echo "✅ API Gateway is healthy" || echo "⚠️ API Gateway health check failed"
-          fi
-          
-          # Check Frontend
-          if kubectl get pods -l app=frontend -n bedrock-chat-v2 --no-headers | grep -q "Running"; then
-            echo "Checking Frontend health..."
-            kubectl exec deployment/frontend -n bedrock-chat-v2 -- wget -qO- http://localhost:3000/health && echo "✅ Frontend is healthy" || echo "⚠️ Frontend health check failed"
-          fi
-      
-      # ======================
-      # Show final status and access info
-      # ======================
-      - name: Show Final Status and Access Information
-        run: |
-          echo ""
-          echo "🎉 Deployment Complete!"
-          echo "=========================="
-          
-          echo ""
-          echo "📊 Final Pod Status:"
           kubectl get pods -n bedrock-chat-v2
-          
-          echo ""
-          echo "🌐 Services:"
-          kubectl get svc -n bedrock-chat-v2
-          
-          # Get access information
-          NODE_PORT=$(kubectl get svc frontend-nodeport -n bedrock-chat-v2 -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "N/A")
-          
-          echo ""
-          echo "🔗 Access Information:"
-          echo "=========================="
-          if [ "$NODE_PORT" != "N/A" ]; then
-            echo "🎨 Frontend: http://YOUR-EC2-IP:$NODE_PORT"
-            echo "📱 Direct Frontend access via NodePort $NODE_PORT"
-          fi
-          
-          echo "🐛 Troubleshooting commands:"
-          echo "kubectl get pods -n bedrock-chat-v2"
-          echo "kubectl logs -f deployment/<service-name> -n bedrock-chat-v2"
-          echo "kubectl describe pod <pod-name> -n bedrock-chat-v2"
-          
-          # Check if all critical services are running
-          RUNNING_SERVICES=0
-          if kubectl get pods -l app=mysql -n bedrock-chat-v2 --no-headers | grep -q "Running"; then
-            RUNNING_SERVICES=$((RUNNING_SERVICES + 1))
-          fi
-          if kubectl get pods -l app=api-gateway -n bedrock-chat-v2 --no-headers | grep -q "Running"; then
-            RUNNING_SERVICES=$((RUNNING_SERVICES + 1))
-          fi
-          if kubectl get pods -l app=frontend -n bedrock-chat-v2 --no-headers | grep -q "Running"; then
-            RUNNING_SERVICES=$((RUNNING_SERVICES + 1))
-          fi
-          
-          echo ""
-          if [ $RUNNING_SERVICES -ge 2 ]; then
-            echo "✅ Core services are running! Your application should be accessible."
-          else
-            echo "⚠️ Some services may need attention. Check the logs above."
-          fi
+          NODE_PORT=$(kubectl get svc frontend-nodeport -n bedrock-chat-v2 -o jsonpath='{.spec.ports[0].nodePort}')
+          echo "Access your app at: http://YOUR-EC2-IP:$NODE_PORT"
