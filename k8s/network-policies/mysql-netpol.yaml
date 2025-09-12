@@ -1,16 +1,14 @@
-# 6. MySQL Network Policy
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: mysql-network-policy
-  namespace: bedrock-chat-v2
+  name: mysql-netpol
+  namespace: bedrock-chat
 spec:
   podSelector:
     matchLabels:
       app: mysql
   policyTypes:
   - Ingress
-  - Egress
   ingress:
   # Allow connections from API Gateway
   - from:
@@ -28,11 +26,3 @@ spec:
     ports:
     - protocol: TCP
       port: 3306
-  egress:
-  # Allow DNS resolution only
-  - to: []
-    ports:
-    - protocol: UDP
-      port: 53
-    - protocol: TCP
-      port: 53

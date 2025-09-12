@@ -2,10 +2,12 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mysql-init-script
-  namespace: bedrock-chat-v2
+  namespace: bedrock-chat
+  labels:
+    app: bedrock-chat
 data:
   init.sql: |
-    CREATE DATABASE IF NOT EXISTS bedrock_chat;
+    CREATE DATABASE IF NOT EXISTS bedrock_chat CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
     USE bedrock_chat;
     
     CREATE TABLE IF NOT EXISTS users (
@@ -14,7 +16,7 @@ data:
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_session_id (session_id)
-    );
+    ) ENGINE=InnoDB;
     
     CREATE TABLE IF NOT EXISTS conversations (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -26,7 +28,7 @@ data:
         INDEX idx_session_id (session_id),
         INDEX idx_created_at (created_at),
         INDEX idx_session_created (session_id, created_at)
-    );
+    ) ENGINE=InnoDB;
     
     CREATE TABLE IF NOT EXISTS uploaded_files (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -41,4 +43,23 @@ data:
         INDEX idx_session_id (session_id),
         INDEX idx_upload_date (upload_date),
         INDEX idx_session_upload (session_id, upload_date)
-    );
+    ) ENGINE=InnoDB;
+    
+    -- Create views for monitoring
+    CREATE OR REPLACE VIEW conversation_summary AS
+    SELECT 
+        session_id,
+        COUNT(*) as message_count,
+        MIN(created_at) as first_message,
+        MAX(created_at) as last_message
+    FROM conversations
+    GROUP BY session_id;
+    
+    CREATE OR REPLACE VIEW file_summary AS
+    SELECT 
+        session_id,
+        COUNT(*) as file_count,
+        SUM(file_size) as total_size,
+        COUNT(CASE WHEN extracted_text IS NOT NULL AND extracted_text != '' THEN 1 END) as files_with_text
+    FROM uploaded_files
+    GROUP BY session_id;

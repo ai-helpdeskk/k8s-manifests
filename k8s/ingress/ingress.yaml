@@ -3,6 +3,8 @@ kind: Ingress
 metadata:
   name: bedrock-chat-ingress
   namespace: bedrock-chat
+  labels:
+    app: bedrock-chat
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /$2
     nginx.ingress.kubernetes.io/proxy-body-size: "20m"
@@ -14,11 +16,17 @@ metadata:
     nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
     nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
     nginx.ingress.kubernetes.io/use-regex: "true"
+    # Rate limiting
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    # SSL settings
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   ingressClassName: nginx
   rules:
   - http:
       paths:
+      # API routes
       - path: /api(/|$)(.*)
         pathType: ImplementationSpecific
         backend:
@@ -26,6 +34,7 @@ spec:
             name: api-gateway
             port:
               number: 8000
+      # Frontend routes (catch-all)
       - path: /(.*)
         pathType: ImplementationSpecific
         backend:
