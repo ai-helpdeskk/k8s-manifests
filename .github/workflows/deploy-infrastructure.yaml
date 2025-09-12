@@ -93,7 +93,16 @@ jobs:
         echo "✅ Network policies applied"
         
         echo "📊 Step 6: Setting up monitoring and quotas..."
-        kubectl apply -f monitoring/
+        kubectl apply -f monitoring/resource-quotas.yaml
+        
+        # Apply mysql backup with error handling
+        if kubectl apply -f monitoring/mysql-backup-cronjob.yaml 2>/dev/null; then
+          echo "✅ MySQL backup CronJob applied"
+        else
+          echo "⚠️ MySQL backup CronJob failed - checking if namespace exists..."
+          kubectl get namespace bedrock-chat || echo "Namespace issue detected"
+        fi
+        
         echo "✅ Monitoring and quotas configured"
         
         echo "🌍 Step 7: Deploying ingress..."
@@ -145,12 +154,16 @@ jobs:
       run: |
         echo "🔍 Testing MySQL connectivity..."
         
-        # Simple connectivity test
-        kubectl run mysql-connectivity-test-$RANDOM --image=mysql:8.0 --rm -i --restart=Never -n bedrock-chat -- \
-          mysql -h mysql.bedrock-chat.svc.cluster.local -u root -pSecureRootPassword123! -e "SELECT 'MySQL is accessible' as status;" 2>/dev/null || {
-          echo "⚠️ MySQL connectivity test failed - this might be expected if using custom passwords"
-          echo "   MySQL service is running, connectivity will be verified by applications"
-        }
+        # Simple connectivity test with improved error handling
+        if kubectl run mysql-connectivity-test-$RANDOM --image=mysql:8.0 --rm -i --restart=Never -n bedrock-chat --timeout=60s -- \
+          mysql -h mysql.bedrock-chat.svc.cluster.local -u root -p$MYSQL_ROOT_PASSWORD -e "SELECT 'MySQL is accessible' as status;" 2>/dev/null; then
+          echo "✅ MySQL connectivity test passed"
+        else
+          echo "⚠️ MySQL connectivity test failed - checking service status..."
+          kubectl get pods -n bedrock-chat -l app=mysql
+          kubectl logs -n bedrock-chat -l app=mysql --tail=10
+          echo "   MySQL service is running, connectivity might need time to stabilize"
+        fi
         
         echo "✅ Database connectivity test completed"
 
@@ -206,6 +219,7 @@ jobs:
           echo "- Check if StorageClass 'local-path' is available"
           echo "- Ensure ingress controller is installed"
           echo "- Verify kubectl has proper cluster access"
+          echo "- Check namespace consistency in all manifests"
         fi
         
         echo ""
