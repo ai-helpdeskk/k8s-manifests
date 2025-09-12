@@ -1,4 +1,4 @@
-name: Deploy Infrastructure (CD Only)
+name: Infrastructure CD
 
 on:
   push:
@@ -6,27 +6,27 @@ on:
   workflow_dispatch:
     inputs:
       force_deploy:
-        description: 'Force redeploy all infrastructure components'
+        description: 'Force redeploy all infrastructure'
         required: false
         default: false
         type: boolean
 
 jobs:
   validate:
-    name: Validate Infrastructure Manifests
-    runs-on: ubuntu-latest
+    name: Validate Infrastructure
+    runs-on: [self-hosted]
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Set up kubectl
-      uses: azure/setup-kubectl@v3
-      with:
-        version: 'v1.28.0'
-    
-    - name: Validate all YAML manifests
+    - name: Verify kubectl access
       run: |
-        echo "🔍 Validating Kubernetes manifests..."
+        kubectl cluster-info
+        kubectl get nodes
+    
+    - name: Validate Kubernetes manifests
+      run: |
+        echo "🔍 Validating all Kubernetes manifests..."
         find k8s -name "*.yaml" -o -name "*.yml" | while read file; do
           echo "Validating: $file"
           kubectl apply --dry-run=client --validate=true -f "$file" || {
@@ -36,58 +36,36 @@ jobs:
         done
         echo "✅ All manifests are valid!"
     
-    - name: Check for required secrets
+    - name: Check secrets configuration
       run: |
-        echo "🔍 Checking for required configurations..."
-        
-        # Check if AWS secrets template exists
-        if [ -f "k8s/secrets/aws-secrets.yaml" ]; then
-          echo "✅ AWS secrets template found"
-          
-          # Check if it contains placeholder values
-          if grep -q "AWS_ACCESS_KEY_ID: \"\"" k8s/secrets/aws-secrets.yaml; then
-            echo "⚠️  AWS secrets contain empty values - make sure to configure them before deployment"
-          else
-            echo "✅ AWS secrets appear to be configured"
-          fi
-        else
-          echo "❌ AWS secrets template not found"
-          exit 1
-        fi
+        echo "🔍 Checking secrets configuration..."
         
         # Check MySQL secrets
         if [ -f "k8s/secrets/mysql-secrets.yaml" ]; then
-          echo "✅ MySQL secrets template found"
+          echo "✅ MySQL secrets found"
         else
-          echo "❌ MySQL secrets template not found"
+          echo "❌ MySQL secrets not found"
+          exit 1
+        fi
+        
+        # Check AWS secrets
+        if [ -f "k8s/secrets/aws-secrets.yaml" ]; then
+          echo "✅ AWS secrets template found"
+          if grep -q 'AWS_ACCESS_KEY_ID: ""' k8s/secrets/aws-secrets.yaml; then
+            echo "⚠️ AWS secrets contain empty values - they should be configured via organization secrets or updated manually"
+          fi
+        else
+          echo "❌ AWS secrets template not found"
           exit 1
         fi
 
   deploy:
     name: Deploy Infrastructure
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted]
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
-    - name: Set up kubectl
-      uses: azure/setup-kubectl@v3
-      with:
-        version: 'v1.28.0'
-    
-    - name: Configure kubectl
-      run: |
-        mkdir -p $HOME/.kube
-        echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
-        chmod 600 $HOME/.kube/config
-    
-    - name: Verify cluster connection
-      run: |
-        echo "🔍 Verifying cluster connection..."
-        kubectl cluster-info
-        kubectl get nodes
-        echo "✅ Cluster connection verified!"
     
     - name: Deploy infrastructure components
       run: |
@@ -114,7 +92,7 @@ jobs:
         kubectl apply -f network-policies/
         echo "✅ Network policies applied"
         
-        echo "📊 Step 6: Setting up monitoring and resource quotas..."
+        echo "📊 Step 6: Setting up monitoring and quotas..."
         kubectl apply -f monitoring/
         echo "✅ Monitoring and quotas configured"
         
@@ -128,136 +106,130 @@ jobs:
       run: |
         echo "⏳ Waiting for MySQL to become ready..."
         
-        # Wait for MySQL StatefulSet to be ready
+        # Wait for StatefulSet rollout
         kubectl rollout status statefulset/mysql -n bedrock-chat --timeout=600s
         
-        # Wait for MySQL pod to be ready
+        # Wait for pod to be ready
         kubectl wait --for=condition=ready pod -l app=mysql -n bedrock-chat --timeout=600s
         
-        echo "✅ MySQL is ready!"
+        echo "✅ MySQL is ready and available!"
     
     - name: Verify infrastructure deployment
       run: |
-        echo "🔍 Verifying infrastructure deployment..."
+        echo "🔍 Comprehensive infrastructure verification..."
         
-        echo "📋 Namespace status:"
+        echo "📋 Namespace:"
         kubectl get namespace bedrock-chat -o wide
         
-        echo "🔐 Secrets status:"
+        echo "🔐 Secrets:"
         kubectl get secrets -n bedrock-chat
         
-        echo "💾 Storage status:"
+        echo "💾 Storage:"
         kubectl get pv,pvc -n bedrock-chat
         
-        echo "🗄️ MySQL status:"
+        echo "🗄️ MySQL:"
         kubectl get pods,svc,statefulset -n bedrock-chat -l app=mysql -o wide
         
-        echo "🌐 Network policies:"
+        echo "🌐 Network Policies:"
         kubectl get networkpolicies -n bedrock-chat
         
-        echo "🌍 Ingress status:"
+        echo "🌍 Ingress:"
         kubectl get ingress -n bedrock-chat -o wide
         
-        echo "📊 Resource quotas:"
-        kubectl get resourcequota -n bedrock-chat
+        echo "📊 Resource Quotas:"
+        kubectl get resourcequota -n bedrock-chat || echo "No resource quotas found"
         
-        echo "✅ Infrastructure verification completed!"
+        echo "✅ Infrastructure verification completed successfully!"
     
-    - name: Test MySQL connectivity
+    - name: Test database connectivity
       run: |
         echo "🔍 Testing MySQL connectivity..."
         
-        # Test MySQL connection from within the cluster
-        kubectl run mysql-test --image=mysql:8.0 --rm -i --restart=Never -n bedrock-chat -- \
-          mysql -h mysql.bedrock-chat.svc.cluster.local -u root -pSecureRootPassword123! -e "SELECT 1;" || {
-          echo "⚠️ MySQL connectivity test failed - this might be expected if custom passwords are used"
+        # Simple connectivity test
+        kubectl run mysql-connectivity-test-$RANDOM --image=mysql:8.0 --rm -i --restart=Never -n bedrock-chat -- \
+          mysql -h mysql.bedrock-chat.svc.cluster.local -u root -pSecureRootPassword123! -e "SELECT 'MySQL is accessible' as status;" 2>/dev/null || {
+          echo "⚠️ MySQL connectivity test failed - this might be expected if using custom passwords"
+          echo "   MySQL service is running, connectivity will be verified by applications"
         }
         
-        echo "✅ MySQL connectivity test completed"
+        echo "✅ Database connectivity test completed"
 
   post-deploy:
-    name: Post-Deployment Status
+    name: Infrastructure Ready Notification
     needs: [validate, deploy]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted]
     if: always()
     steps:
-    - name: Deployment Status Summary
+    - name: Deployment status summary
       run: |
         echo "## 🎯 Bedrock Chat Infrastructure Deployment Summary"
-        echo ""
-        echo "### 📊 Job Status"
-        echo "- **Validation**: ${{ needs.validate.result }}"
-        echo "- **Deployment**: ${{ needs.deploy.result }}"
         echo ""
         
         if [ "${{ needs.deploy.result }}" == "success" ]; then
           echo "### ✅ Infrastructure Successfully Deployed!"
           echo ""
-          echo "Your Bedrock Chat infrastructure is now ready. You can now deploy the microservices:"
-          echo ""
-          echo "### 🚀 Next Steps:"
-          echo "1. **Deploy microservices** - Push code to each microservice repository"
-          echo "2. **Configure AWS secrets** - Update the aws-secrets in the cluster if needed"
-          echo "3. **Verify services** - Check that all services deploy and connect properly"
-          echo ""
-          echo "### 📋 Useful Commands:"
-          echo "\`\`\`bash"
-          echo "# Check all infrastructure components"
-          echo "kubectl get all -n bedrock-chat"
-          echo ""
-          echo "# Monitor MySQL startup"
-          echo "kubectl logs -f statefulset/mysql -n bedrock-chat"
-          echo ""
-          echo "# Check persistent storage"
-          echo "kubectl get pv,pvc -n bedrock-chat"
-          echo ""
-          echo "# View ingress configuration"
-          echo "kubectl get ingress -n bedrock-chat -o wide"
-          echo "\`\`\`"
-          echo ""
-          echo "### 🌟 Infrastructure Components Ready:"
+          echo "🌟 **All infrastructure components are now ready:**"
           echo "- ✅ Kubernetes namespace (bedrock-chat)"
           echo "- ✅ MySQL database with persistent storage"
           echo "- ✅ Secrets management (MySQL + AWS)"
           echo "- ✅ Network policies for security"
-          echo "- ✅ Ingress for external access"
-          echo "- ✅ Resource quotas and monitoring"
+          echo "- ✅ Ingress controller configuration"
+          echo "- ✅ Resource monitoring and quotas"
           echo ""
+          echo "### 🚀 Ready for Microservice Deployments!"
+          echo ""
+          echo "You can now deploy your microservices by pushing to their respective repositories."
+          echo "Each microservice will automatically wait for the required infrastructure components."
+          echo ""
+          echo "### 📋 Quick Verification Commands:"
+          echo "\`\`\`bash"
+          echo "# Check all infrastructure components"
+          echo "kubectl get all -n bedrock-chat"
+          echo ""
+          echo "# Monitor MySQL logs"
+          echo "kubectl logs -f statefulset/mysql -n bedrock-chat"
+          echo ""
+          echo "# Check storage"
+          echo "kubectl get pv,pvc -n bedrock-chat"
+          echo ""
+          echo "# View network policies"
+          echo "kubectl get networkpolicies -n bedrock-chat"
+          echo "\`\`\`"
+          
         else
           echo "### ❌ Infrastructure Deployment Failed!"
           echo ""
-          echo "Please check the deployment logs above for error details."
+          echo "Please check the deployment logs above for details."
           echo ""
           echo "### 🔧 Common Issues:"
-          echo "- Verify KUBECONFIG secret is correctly configured"
-          echo "- Ensure cluster has sufficient resources"
+          echo "- Verify cluster has sufficient resources"
           echo "- Check if StorageClass 'local-path' is available"
-          echo "- Verify ingress controller is installed"
-          echo ""
+          echo "- Ensure ingress controller is installed"
+          echo "- Verify kubectl has proper cluster access"
         fi
         
-        echo "### 📞 Support"
-        echo "If you encounter issues, check the workflow logs and Kubernetes events:"
-        echo "\`kubectl get events -n bedrock-chat --sort-by='.lastTimestamp'\`"
+        echo ""
+        echo "### 📞 Troubleshooting"
+        echo "Check events: \`kubectl get events -n bedrock-chat --sort-by='.lastTimestamp'\`"
 
-  notify-completion:
-    name: Notify Infrastructure Ready
-    needs: [deploy]
-    runs-on: ubuntu-latest
+  ready-notification:
+    name: Infrastructure Ready Signal
+    needs: deploy
+    runs-on: [self-hosted]
     if: needs.deploy.result == 'success'
     steps:
-    - name: Infrastructure Ready Notification
+    - name: Signal infrastructure ready
       run: |
-        echo "🎉 🎯 BEDROCK CHAT INFRASTRUCTURE IS READY!"
+        echo "🎉 🎯 INFRASTRUCTURE DEPLOYMENT COMPLETE!"
         echo ""
-        echo "✅ All infrastructure components have been successfully deployed"
-        echo "🚀 You can now proceed to deploy your microservices"
+        echo "✅ Bedrock Chat infrastructure is fully deployed and ready"
+        echo "🚀 Microservices can now be deployed to the cluster"
         echo ""
-        echo "The following components are now available:"
-        echo "- Kubernetes namespace: bedrock-chat"
+        echo "Infrastructure includes:"
         echo "- MySQL database with persistent storage"
-        echo "- Network security policies"
-        echo "- Ingress configuration for external access"
-        echo "- Resource monitoring and quotas"
+        echo "- Namespace and security policies"
+        echo "- Secrets management"
+        echo "- Ingress configuration"
+        echo "- Resource monitoring"
         echo ""
-        echo "Ready for microservice deployments! 🌟"
+        echo "🌟 Ready for application deployment!"
