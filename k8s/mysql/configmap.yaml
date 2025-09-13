@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mysql-init-script
-  namespace: bedrock-chat
+  namespace: bedrock-chat-v2  # CORRECTED
   labels:
     app: bedrock-chat
 data:
@@ -45,7 +45,6 @@ data:
         INDEX idx_session_upload (session_id, upload_date)
     ) ENGINE=InnoDB;
     
-    -- Create views for monitoring
     CREATE OR REPLACE VIEW conversation_summary AS
     SELECT 
         session_id,
