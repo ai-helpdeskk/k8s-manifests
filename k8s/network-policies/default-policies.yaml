@@ -3,7 +3,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: default-deny-all
-  namespace: bedrock-chat
+  namespace: bedrock-chat-v2  # CORRECTED
 spec:
   podSelector: {}
   policyTypes:
@@ -15,7 +15,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-dns
-  namespace: bedrock-chat
+  namespace: bedrock-chat-v2  # CORRECTED
 spec:
   podSelector: {}
   policyTypes:
