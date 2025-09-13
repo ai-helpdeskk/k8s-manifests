@@ -1,4 +1,3 @@
-# MySQL Persistent Volume
 apiVersion: v1
 kind: PersistentVolume  
 metadata:
