@@ -1,64 +1,48 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: mysql-init-script
-  namespace: bedrock-chat-v2  # CORRECTED
-  labels:
-    app: bedrock-chat
+  name: mysql-initdb
+  namespace: bedrock-chat-v2
 data:
   init.sql: |
-    CREATE DATABASE IF NOT EXISTS bedrock_chat CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    -- Create database if not exists
+    CREATE DATABASE IF NOT EXISTS bedrock_chat;
     USE bedrock_chat;
     
-    CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        session_id VARCHAR(255) UNIQUE NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_session_id (session_id)
-    ) ENGINE=InnoDB;
+    -- Create user if not exists
+    CREATE USER IF NOT EXISTS 'bedrock_user'@'%' IDENTIFIED BY 'bedrock_password';
+    GRANT ALL PRIVILEGES ON bedrock_chat.* TO 'bedrock_user'@'%';
+    FLUSH PRIVILEGES;
     
+    -- Create conversations table
     CREATE TABLE IF NOT EXISTS conversations (
         id INT AUTO_INCREMENT PRIMARY KEY,
         session_id VARCHAR(255) NOT NULL,
         message TEXT NOT NULL,
         response TEXT NOT NULL,
-        model_used VARCHAR(100) DEFAULT 'unknown',
+        model_used VARCHAR(100),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_session_id (session_id),
-        INDEX idx_created_at (created_at),
-        INDEX idx_session_created (session_id, created_at)
-    ) ENGINE=InnoDB;
+        INDEX idx_created_at (created_at)
+    );
     
-    CREATE TABLE IF NOT EXISTS uploaded_files (
+    -- Create file_uploads table for file service
+    CREATE TABLE IF NOT EXISTS file_uploads (
         id INT AUTO_INCREMENT PRIMARY KEY,
         session_id VARCHAR(255) NOT NULL,
         filename VARCHAR(255) NOT NULL,
         original_name VARCHAR(255) NOT NULL,
-        file_type VARCHAR(100) NOT NULL,
-        file_size BIGINT NOT NULL,
-        file_path VARCHAR(500) NOT NULL,
-        extracted_text LONGTEXT,
-        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        file_path TEXT NOT NULL,
+        content_type VARCHAR(100),
+        file_size BIGINT,
+        content TEXT,
+        has_text BOOLEAN DEFAULT FALSE,
+        upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_session_id (session_id),
-        INDEX idx_upload_date (upload_date),
-        INDEX idx_session_upload (session_id, upload_date)
-    ) ENGINE=InnoDB;
+        INDEX idx_filename (filename),
+        INDEX idx_upload_timestamp (upload_timestamp)
+    );
     
-    CREATE OR REPLACE VIEW conversation_summary AS
-    SELECT 
-        session_id,
-        COUNT(*) as message_count,
-        MIN(created_at) as first_message,
-        MAX(created_at) as last_message
-    FROM conversations
-    GROUP BY session_id;
-    
-    CREATE OR REPLACE VIEW file_summary AS
-    SELECT 
-        session_id,
-        COUNT(*) as file_count,
-        SUM(file_size) as total_size,
-        COUNT(CASE WHEN extracted_text IS NOT NULL AND extracted_text != '' THEN 1 END) as files_with_text
-    FROM uploaded_files
-    GROUP BY session_id;
+    -- Insert initial test data
+    INSERT IGNORE INTO conversations (session_id, message, response, model_used) VALUES 
+    ('init-session', 'System initialization', 'Database initialized successfully', 'system');
